@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,36 +46,65 @@ type ConvictionStore struct {
 	dbPersistDisabled bool
 }
 
+// convictionRing is a bounded FIFO of Convictions (oldest first). It is a true
+// circular buffer (2026-11-05 CPU audit): the previous shape did
+// `convictions = convictions[1:]; append(...)` once full, which reallocated and
+// copied all max (2,000) ~500-byte structs on EVERY append, and pre-allocated
+// the full capacity per (ISP, agent) ring — 60 MB of mostly-empty heap in the
+// prod heap profile. buf grows geometrically until it holds max entries, then
+// head rotates. Index i (0 = oldest) lives at buf[(head+i)%len(buf)].
 type convictionRing struct {
-	convictions []Conviction
-	max         int
+	buf  []Conviction
+	head int
+	max  int
 }
 
 func newConvictionRing(max int) *convictionRing {
+	if max < 1 {
+		max = 1
+	}
+	initial := 64
+	if initial > max {
+		initial = max
+	}
 	return &convictionRing{
-		convictions: make([]Conviction, 0, max),
-		max:         max,
+		buf: make([]Conviction, 0, initial),
+		max: max,
 	}
 }
 
 func (r *convictionRing) append(c Conviction) {
-	if len(r.convictions) >= r.max {
-		r.convictions = r.convictions[1:]
+	if len(r.buf) < r.max {
+		r.buf = append(r.buf, c)
+		return
 	}
-	r.convictions = append(r.convictions, c)
+	r.buf[r.head] = c
+	r.head = (r.head + 1) % r.max
+}
+
+// len is the number of convictions held (<= max).
+func (r *convictionRing) len() int { return len(r.buf) }
+
+// at returns a pointer to the i-th oldest conviction (0 <= i < len()). The
+// pointer is only valid while the store lock is held; callers copy what they
+// keep. Scanning via at() is how RecallSimilar avoids copying the whole ring.
+func (r *convictionRing) at(i int) *Conviction {
+	return &r.buf[(r.head+i)%len(r.buf)]
 }
 
 func (r *convictionRing) all() []Conviction {
-	out := make([]Conviction, len(r.convictions))
-	copy(out, r.convictions)
+	out := make([]Conviction, len(r.buf))
+	for i := range r.buf {
+		out[i] = *r.at(i)
+	}
 	return out
 }
 
 func (r *convictionRing) byVerdict(v Verdict) []Conviction {
 	var out []Conviction
-	for _, c := range r.convictions {
-		if c.Verdict == v {
-			out = append(out, c)
+	for i := range r.buf {
+		if c := r.at(i); c.Verdict == v {
+			out = append(out, *c)
 		}
 	}
 	return out
@@ -161,10 +191,10 @@ func (cs *ConvictionStore) trackVelocity() {
 
 // VelocityStats holds conviction throughput metrics.
 type VelocityStats struct {
-	PerMinute1m  float64 `json:"per_minute_1m"`
-	PerMinute5m  float64 `json:"per_minute_5m"`
-	Total1m      int     `json:"total_1m"`
-	Total5m      int     `json:"total_5m"`
+	PerMinute1m float64 `json:"per_minute_1m"`
+	PerMinute5m float64 `json:"per_minute_5m"`
+	Total1m     int     `json:"total_1m"`
+	Total5m     int     `json:"total_5m"`
 }
 
 // Velocity computes conviction throughput for the last 1m and 5m.
@@ -266,36 +296,45 @@ func (cs *ConvictionStore) RecallByVerdict(isp ISP, at AgentType, v Verdict) []C
 // RecallSimilar finds convictions with similar temporal and infrastructure context.
 // This is the throttle agent's primary recall mechanism: "have I been in this
 // situation before, and what did I decide?"
+//
+// Scores IN PLACE under the read lock and copies only the returned entries.
+// The previous shape copied the whole ring twice (RecallAll + range-by-value)
+// and swapped full ScoredConviction structs in its sort: on prod it was 14% of
+// the server's CPU at idle (pprof 2026-11-05, 84% of that in runtime.duffcopy),
+// called by ThrottleAgent.Evaluate for every ISP on every signal snapshot.
+// Ordering is unchanged: similarity descending, ties keep ring order (oldest
+// first) — the old insertion sort was stable in exactly that way.
 func (cs *ConvictionStore) RecallSimilar(isp ISP, at AgentType, query MicroContext, limit int) []ScoredConviction {
-	all := cs.RecallAll(isp, at)
-	if len(all) == 0 {
+	r := cs.ring(isp, at)
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	n := r.len()
+	if n == 0 {
 		return nil
 	}
-
-	var scored []ScoredConviction
-	for _, c := range all {
-		sim := contextSimilarity(query, c.Context)
-		if sim > 0.2 {
-			scored = append(scored, ScoredConviction{
-				Conviction: c,
-				Similarity: sim,
-			})
+	type hit struct {
+		i   int
+		sim float64
+	}
+	var hits []hit
+	for i := 0; i < n; i++ {
+		if sim := contextSimilarity(query, r.at(i).Context); sim > 0.2 {
+			hits = append(hits, hit{i: i, sim: sim})
 		}
 	}
-
-	// Sort by similarity descending (simple insertion sort for bounded size)
-	for i := 1; i < len(scored); i++ {
-		j := i
-		for j > 0 && scored[j].Similarity > scored[j-1].Similarity {
-			scored[j], scored[j-1] = scored[j-1], scored[j]
-			j--
-		}
+	if len(hits) == 0 {
+		return nil
 	}
-
-	if limit > 0 && len(scored) > limit {
-		scored = scored[:limit]
+	sort.SliceStable(hits, func(a, b int) bool { return hits[a].sim > hits[b].sim })
+	if limit > 0 && len(hits) > limit {
+		hits = hits[:limit]
 	}
-	return scored
+	out := make([]ScoredConviction, len(hits))
+	for k, h := range hits {
+		out[k] = ScoredConviction{Conviction: *r.at(h.i), Similarity: h.sim}
+	}
+	return out
 }
 
 // ScoredConviction pairs a conviction with its similarity score to a query.
@@ -318,18 +357,31 @@ func (cs *ConvictionStore) RecallByIP(isp ISP, at AgentType, ip string) []Convic
 
 // RecallRecent returns the N most recent convictions for an agent.
 func (cs *ConvictionStore) RecallRecent(isp ISP, at AgentType, n int) []Conviction {
-	all := cs.RecallAll(isp, at)
-	if n >= len(all) {
-		return all
+	r := cs.ring(isp, at)
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	total := r.len()
+	if n < 0 {
+		n = 0
 	}
-	return all[len(all)-n:]
+	if n > total {
+		n = total
+	}
+	// Copy only the n newest (oldest-first order preserved), not the whole ring.
+	out := make([]Conviction, n)
+	for k := 0; k < n; k++ {
+		out[k] = *r.at(total - n + k)
+	}
+	return out
 }
 
 // Stats returns conviction counts per verdict for an agent.
 func (cs *ConvictionStore) Stats(isp ISP, at AgentType) (willCount, wontCount int) {
-	all := cs.RecallAll(isp, at)
-	for _, c := range all {
-		switch c.Verdict {
+	r := cs.ring(isp, at)
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	for i := 0; i < r.len(); i++ {
+		switch r.at(i).Verdict {
 		case VerdictWill:
 			willCount++
 		case VerdictWont:
@@ -379,12 +431,12 @@ func (cs *ConvictionStore) loadFromDB(ctx context.Context, isp ISP, at AgentType
 	var convictions []Conviction
 	for rows.Next() {
 		var (
-			c             Conviction
-			ispStr        string
-			atStr         string
-			effRate       sql.NullFloat64
-			ctxJSON       []byte
-			outcomeJSON   []byte
+			c           Conviction
+			ispStr      string
+			atStr       string
+			effRate     sql.NullFloat64
+			ctxJSON     []byte
+			outcomeJSON []byte
 		)
 		if err := rows.Scan(&c.ID, &ispStr, &atStr, &c.AgentID, &c.Verdict, &c.Statement, &effRate, &ctxJSON, &outcomeJSON, &c.CreatedAt); err != nil {
 			log.Printf("[conviction] DB scan error: %v", err)
@@ -449,7 +501,7 @@ func (cs *ConvictionStore) LoadAll(ctx context.Context) {
 			// If S3 didn't produce convictions, try DB fallback
 			r := cs.ring(isp, at)
 			cs.mu.RLock()
-			count := len(r.convictions)
+			count := r.len()
 			cs.mu.RUnlock()
 
 			if count == 0 && cs.db != nil {
