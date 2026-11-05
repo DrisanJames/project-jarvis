@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,9 @@ func (m *CampaignHealthMonitor) loop() {
 			// every replica, and a 5-min resolution is enough for an alert
 			// whose criterion is already 30 min stale.
 			if tick%stalledDrainEveryTicks == 0 {
+				// Complete first so a campaign that just drained drops out of
+				// the drain probe's status='sending' scope in the same pass.
+				m.completeFinishedCampaigns()
 				m.checkStalledDrain()
 			}
 		}
@@ -647,14 +651,22 @@ const stalledDrainEveryTicks = 5
 // planned-wave probe — no scan of every wave of every sending campaign (the
 // MAX(window_end_at) shape timed out at 120s on prod, 2026-11-04).
 // $1 = campaign ids still inside the alert cooldown (excluded).
-const stalledDrainFrom = `
+//
+// The CTE is a SEPARATE prefix (stalledDrainCTE) because a WITH clause must
+// come BEFORE the SELECT: the first deploy (:1232, 2026-11-05) composed
+// "SELECT ... WITH q AS (...)" and every run failed with
+// `syntax error at or near "WITH"` while 19 campaigns sat on 265k overdue rows.
+// TestStalledDrainSQLComposes pins the shape.
+const stalledDrainCTE = `
 		WITH q AS (
 			SELECT campaign_id, COUNT(*) AS queued, MIN(scheduled_at) AS oldest_due
 			FROM mailing_campaign_queue
 			WHERE status = 'queued'
 			  AND scheduled_at < NOW() - interval '30 minutes'
 			GROUP BY campaign_id
-		)
+		)`
+
+const stalledDrainFrom = `
 		FROM q
 		JOIN mailing_campaigns c ON c.id = q.campaign_id
 		WHERE c.status = 'sending'
@@ -702,10 +714,7 @@ func (m *CampaignHealthMonitor) checkStalledDrain() {
 		muted = append(muted, id)
 	}
 
-	rows, err := m.db.QueryContext(ctx, `
-		SELECT c.id, COALESCE(c.name, ''), q.queued, q.oldest_due`+stalledDrainFrom+`
-		ORDER BY q.oldest_due ASC
-		LIMIT `+fmt.Sprint(stalledDrainLimit), pq.Array(muted))
+	rows, err := m.db.QueryContext(ctx, stalledDrainRowsSQL(), pq.Array(muted))
 	if err != nil {
 		if !strings.Contains(err.Error(), "does not exist") {
 			log.Printf("[HealthMonitor] stalled-drain query error: %v", err)
@@ -743,8 +752,7 @@ func (m *CampaignHealthMonitor) checkStalledDrain() {
 	total := len(stalled)
 	if len(stalled) >= stalledDrainLimit {
 		var n, sum int64
-		if err := m.db.QueryRowContext(ctx, `
-			SELECT COUNT(*), COALESCE(SUM(q.queued), 0)`+stalledDrainFrom, pq.Array(muted)).Scan(&n, &sum); err != nil {
+		if err := m.db.QueryRowContext(ctx, stalledDrainCountSQL(), pq.Array(muted)).Scan(&n, &sum); err != nil {
 			log.Printf("[HealthMonitor] stalled-drain count error (headline uses %d rows): %v", len(stalled), err)
 		} else if int(n) >= total {
 			total, recipients = int(n), sum
@@ -789,6 +797,91 @@ func (m *CampaignHealthMonitor) checkStalledDrain() {
 			m.drainAlertedAt[dc.ID] = now
 		}
 	}
+}
+
+// completeFinishedLimit bounds the campaigns one janitor run flips to 'sent'.
+const completeFinishedLimit = 200
+
+// completeFinishedCampaignsSQL is the REQ-082/REQ-089 completion predicate,
+// verbatim from cmd/server/main.go `complete_finished_campaigns`, bounded by
+// LIMIT $1 and ordered oldest-anchor first. A campaign flips 'sending' -> 'sent'
+// only when NO queue row is active, NO wave is active ('produced' is active:
+// a Kafka-routed wave is still landing), at least one wave completed, and every
+// enqueued recipient has landed in the queue.
+//
+// WHY THIS LIVES HERE (2026-11-05 audit): that statement was ONLY in
+// runStartupMigrations — boot-time, 5 s statement budget. With ~1,600 drained
+// 'sending' campaigns it timed out at all three boots on 2026-11-05 ("TIMEOUT
+// (skipped — will retry next boot)"), so 1,605 of 1,677 same-day campaigns sat
+// in 'sending' after draining, every 'sending'-scoped monitor query walked them
+// each tick (~67k log lines/hour), and jarvis_ops reported 1,221 zombies. The
+// boot-time copy stays as a belt; this is the braces. Both replicas run it;
+// FOR UPDATE SKIP LOCKED + an idempotent predicate make the double run safe.
+// Kill switch: CAMPAIGN_COMPLETE_JANITOR_DISABLED=1.
+//
+// ONE deliberate difference from the boot copy: the landed check compares
+// SUM(enqueued_recipients) to mailing_campaigns.queued_count (incremented in the
+// same enqueue transaction, pmta_wave_dispatcher.go) instead of
+// COUNT(*) FROM mailing_campaign_queue — the per-campaign COUNT is what made
+// the boot copy exceed 5 s (and a LIMIT 200 SELECT exceed 120 s on prod,
+// 2026-11-05). The COUNT also goes FALSE forever once DataCleanup purges a
+// campaign's terminal rows. The Kafka "still in the broker" case that check
+// originally guarded (REQ-082) is now covered by 'produced' in the active-wave
+// list (REQ-089): a routed wave stays 'produced' until landed >= produced.
+// Verified 2026-11-05: 1,605 of 1,605 drained 'sending' campaigns pass the
+// counter form; 0 have a NULL/0 counter.
+const completeFinishedCampaignsSQL = `
+		UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+		WHERE id IN (
+			SELECT c.id FROM mailing_campaigns c
+			WHERE c.status = 'sending'
+			  AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = c.id AND q.status IN ('queued','sending','claimed'))
+			  AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched','produced'))
+			  AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = c.id AND w2.status = 'completed')
+			  AND COALESCE((SELECT SUM(w3.enqueued_recipients) FROM mailing_campaign_waves w3 WHERE w3.campaign_id = c.id), 0)
+			      <= COALESCE(c.queued_count, 0)
+			ORDER BY c.scheduled_at ASC
+			LIMIT $1
+			FOR UPDATE OF c SKIP LOCKED
+		)`
+
+func campaignCompleteJanitorDisabled() bool {
+	v := strings.TrimSpace(os.Getenv("CAMPAIGN_COMPLETE_JANITOR_DISABLED"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// completeFinishedCampaigns runs the completion predicate for up to
+// completeFinishedLimit campaigns under its own 30 s deadline.
+func (m *CampaignHealthMonitor) completeFinishedCampaigns() {
+	if campaignCompleteJanitorDisabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	defer cancel()
+	res, err := m.db.ExecContext(ctx, completeFinishedCampaignsSQL, completeFinishedLimit)
+	if err != nil {
+		if !strings.Contains(err.Error(), "does not exist") {
+			log.Printf("[HealthMonitor] complete-finished janitor error: %v", err)
+		}
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[HealthMonitor] complete-finished janitor: %d drained campaigns -> sent", n)
+	}
+}
+
+// stalledDrainRowsSQL is the per-campaign select: CTE first, then SELECT.
+func stalledDrainRowsSQL() string {
+	return stalledDrainCTE + `
+		SELECT c.id, COALESCE(c.name, ''), q.queued, q.oldest_due` + stalledDrainFrom + `
+		ORDER BY q.oldest_due ASC
+		LIMIT ` + fmt.Sprint(stalledDrainLimit)
+}
+
+// stalledDrainCountSQL is the companion aggregate over the same CTE + FROM.
+func stalledDrainCountSQL() string {
+	return stalledDrainCTE + `
+		SELECT COUNT(*), COALESCE(SUM(q.queued), 0)` + stalledDrainFrom
 }
 
 func minutesSince(t time.Time) int {

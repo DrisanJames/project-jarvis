@@ -303,9 +303,29 @@ type assertErr string
 
 func (a assertErr) Error() string { return string(a) }
 
-const stalledDrainSQL = `SELECT c.id, COALESCE\(c.name, ''\), q.queued, q.oldest_due\s+WITH q AS \(\s+SELECT campaign_id, COUNT\(\*\) AS queued, MIN\(scheduled_at\) AS oldest_due\s+FROM mailing_campaign_queue\s+WHERE status = 'queued'\s+AND scheduled_at < NOW\(\) - interval '30 minutes'`
+// The CTE must come FIRST. The :1232 build matched "SELECT ... WITH q AS" here,
+// which Postgres rejects (`syntax error at or near "WITH"`) — the alert was dead
+// in prod for an hour while 19 campaigns sat on 265k overdue rows. Anchor the
+// regex at the start of the statement so the SELECT-before-WITH shape can never
+// pass again.
+const stalledDrainRowsRE = `^\s*WITH q AS \(\s+SELECT campaign_id, COUNT\(\*\) AS queued, MIN\(scheduled_at\) AS oldest_due\s+FROM mailing_campaign_queue\s+WHERE status = 'queued'\s+AND scheduled_at < NOW\(\) - interval '30 minutes'\s+GROUP BY campaign_id\s+\)\s+SELECT c.id, COALESCE\(c.name, ''\), q.queued, q.oldest_due\s+FROM q`
 
-const stalledDrainCountSQL = `SELECT COUNT\(\*\), COALESCE\(SUM\(q.queued\), 0\)\s+WITH q AS`
+const stalledDrainCountRE = `^\s*WITH q AS \(.*\)\s+SELECT COUNT\(\*\), COALESCE\(SUM\(q.queued\), 0\)\s+FROM q`
+
+// TestStalledDrainSQLComposes pins the statement order of both composed queries:
+// WITH first, exactly one SELECT after the CTE's closing paren, FROM q after it.
+func TestStalledDrainSQLComposes(t *testing.T) {
+	for name, sql := range map[string]string{"rows": stalledDrainRowsSQL(), "count": stalledDrainCountSQL()} {
+		s := strings.TrimSpace(sql)
+		require.Truef(t, strings.HasPrefix(s, "WITH q AS ("), "%s: must start with the CTE, got %q", name, s[:30])
+		cteEnd := strings.Index(s, "\n\t\t)")
+		require.Greaterf(t, cteEnd, 0, "%s: CTE close not found", name)
+		rest := s[cteEnd:]
+		require.Equalf(t, 1, strings.Count(rest, "SELECT c") + strings.Count(rest, "SELECT COUNT"), "%s: exactly one outer SELECT after the CTE", name)
+		require.Lessf(t, strings.Index(rest, "SELECT"), strings.Index(rest, "FROM q"), "%s: SELECT must precede FROM q", name)
+		require.NotContainsf(t, rest, "WITH", "%s: no second WITH after the CTE", name)
+	}
+}
 
 func drainRows(now time.Time) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}).
@@ -315,7 +335,7 @@ func drainRows(now time.Time) *sqlmock.Rows {
 
 func TestStalledDrainSQL_AgeBoundAndCriterion(t *testing.T) {
 	assert.Contains(t, stalledDrainFrom, "c.scheduled_at > NOW() - interval '2 days'")
-	assert.Contains(t, stalledDrainFrom, "scheduled_at < NOW() - interval '30 minutes'")
+	assert.Contains(t, stalledDrainCTE, "scheduled_at < NOW() - interval '30 minutes'")
 	assert.Contains(t, stalledDrainFrom, "wv.status = 'planned'")
 	assert.NotContains(t, stalledDrainFrom, "window_end_at")
 	assert.Equal(t, 5, stalledDrainEveryTicks)
@@ -339,7 +359,7 @@ func TestCheckStalledDrain_PostsOneRollUp(t *testing.T) {
 
 	now := time.Now()
 	// < LIMIT rows → N/M from the rows, no companion aggregate.
-	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	mock.ExpectQuery(stalledDrainRowsRE).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
 	m.checkStalledDrain()
 
 	require.Len(t, alerter.calls, 1)
@@ -361,8 +381,8 @@ func TestCheckStalledDrain_LimitHitUsesAggregate(t *testing.T) {
 	for i := 0; i < stalledDrainLimit; i++ {
 		rows.AddRow(fmt.Sprintf("camp-%d", i), fmt.Sprintf("Cell %d", i), int64(100), now.Add(-time.Duration(300-i)*time.Minute))
 	}
-	mock.ExpectQuery(stalledDrainSQL).WillReturnRows(rows)
-	mock.ExpectQuery(stalledDrainCountSQL).
+	mock.ExpectQuery(stalledDrainRowsRE).WillReturnRows(rows)
+	mock.ExpectQuery(stalledDrainCountRE).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "sum"}).AddRow(40, 95768))
 	m.checkStalledDrain()
 
@@ -379,14 +399,14 @@ func TestCheckStalledDrain_CooldownSuppressesSecondTick(t *testing.T) {
 	m, mock := newDrainMonitor(t, alerter)
 
 	now := time.Now()
-	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	mock.ExpectQuery(stalledDrainRowsRE).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
 	m.checkStalledDrain()
 	require.Len(t, alerter.calls, 1)
 	require.Len(t, m.drainAlertedAt, 2)
 
 	// Second tick inside the 1h cooldown: both ids are passed as excluded,
 	// the DB returns nothing reportable → no post.
-	mock.ExpectQuery(stalledDrainSQL).
+	mock.ExpectQuery(stalledDrainRowsRE).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}))
 	m.checkStalledDrain()
@@ -396,7 +416,7 @@ func TestCheckStalledDrain_CooldownSuppressesSecondTick(t *testing.T) {
 	for id := range m.drainAlertedAt {
 		m.drainAlertedAt[id] = now.Add(-stalledDrainCooldown - time.Minute)
 	}
-	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	mock.ExpectQuery(stalledDrainRowsRE).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
 	m.checkStalledDrain()
 	require.Len(t, alerter.calls, 2, "post again after cooldown")
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -407,7 +427,7 @@ func TestCheckStalledDrain_MutedIdsPassedAsExcluded(t *testing.T) {
 	m, mock := newDrainMonitor(t, alerter)
 	m.drainAlertedAt = map[string]time.Time{"camp-d1": time.Now()}
 
-	mock.ExpectQuery(stalledDrainSQL).
+	mock.ExpectQuery(stalledDrainRowsRE).
 		WithArgs(pq.Array([]string{"camp-d1"})).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}))
 	m.checkStalledDrain()
@@ -420,7 +440,7 @@ func TestCheckStalledDrain_FailedPostDoesNotMute(t *testing.T) {
 	alerter := &fakeAlerter{err: assertErr("slack down")}
 	m, mock := newDrainMonitor(t, alerter)
 
-	mock.ExpectQuery(stalledDrainSQL).WillReturnRows(drainRows(time.Now()))
+	mock.ExpectQuery(stalledDrainRowsRE).WillReturnRows(drainRows(time.Now()))
 	m.checkStalledDrain()
 
 	require.Len(t, alerter.calls, 1)
@@ -446,4 +466,50 @@ func TestLateAndDrain_Disabled_NoQueryNoPost(t *testing.T) {
 
 	assert.Empty(t, alerter.calls)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- complete-finished janitor (2026-11-05 audit) ---
+
+const completeFinishedRE = `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE\(completed_at, NOW\(\)\), updated_at = NOW\(\)\s+WHERE id IN \(\s+SELECT c.id FROM mailing_campaigns c\s+WHERE c.status = 'sending'`
+
+func TestCompleteFinishedCampaigns_RunsBoundedUpdate(t *testing.T) {
+	t.Setenv("CAMPAIGN_COMPLETE_JANITOR_DISABLED", "")
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	t.Cleanup(m.cancel)
+	mock.ExpectExec(completeFinishedRE).WithArgs(completeFinishedLimit).WillReturnResult(sqlmock.NewResult(0, 37))
+	m.completeFinishedCampaigns()
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCompleteFinishedCampaigns_PredicateMatchesBootMigration(t *testing.T) {
+	// The predicate must keep every REQ-082/REQ-089 guard: active queue rows,
+	// active waves INCLUDING 'produced', a completed wave, and the landed check.
+	for _, frag := range []string{
+		"q.status IN ('queued','sending','claimed')",
+		"w.status IN ('planned','enqueuing','dispatched','produced')",
+		"w2.status = 'completed'",
+		"SUM(w3.enqueued_recipients)",
+		"<= COALESCE(c.queued_count, 0)",
+		"FOR UPDATE OF c SKIP LOCKED",
+		"LIMIT $1",
+	} {
+		assert.Contains(t, completeFinishedCampaignsSQL, frag)
+	}
+	assert.Equal(t, 200, completeFinishedLimit)
+}
+
+func TestCompleteFinishedCampaigns_KillSwitch(t *testing.T) {
+	t.Setenv("CAMPAIGN_COMPLETE_JANITOR_DISABLED", "1")
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	t.Cleanup(m.cancel)
+	m.completeFinishedCampaigns() // no ExpectExec: any query would fail the mock
+	require.NoError(t, mock.ExpectationsWereMet())
 }
