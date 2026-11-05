@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,9 +82,30 @@ func (p *vmtaPool) SetOnIPsChanged(cb OnIPsChangedFunc) {
 }
 
 // refresh loads the IP pool from the database if stale.
+// vmtaPoolNegativeCacheDisabled restores the pre-2026-11-05 behaviour in which an
+// EMPTY pool was never cached: every Send on a profile with no dedicated IPs
+// (every *-ses-pool / ses-relay profile, i.e. most of the estate) re-ran the two
+// pool queries and logged "refresh returned 0 IPs" — ~1,600 queries + lines per
+// minute on prod (CloudWatch 2026-11-05 04:40–04:50Z: 16,277 lines / 10 min).
+// VMTA_POOL_NEGATIVE_CACHE_DISABLED=1 brings that back.
+func vmtaPoolNegativeCacheDisabled() bool {
+	v := strings.TrimSpace(os.Getenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// fresh reports whether the last load (empty or not) is still inside the TTL.
+// An empty result is cached for the same TTL as a populated one — IPs added to
+// a pool show up within ttl, exactly as a changed IP set does today.
+func (p *vmtaPool) fresh() bool {
+	if time.Since(p.loadedAt) >= p.ttl {
+		return false
+	}
+	return len(p.ips) > 0 || !vmtaPoolNegativeCacheDisabled()
+}
+
 func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	p.mu.RLock()
-	if time.Since(p.loadedAt) < p.ttl && len(p.ips) > 0 {
+	if p.fresh() {
 		p.mu.RUnlock()
 		return
 	}
@@ -92,7 +114,7 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if time.Since(p.loadedAt) < p.ttl && len(p.ips) > 0 {
+	if p.fresh() {
 		return
 	}
 

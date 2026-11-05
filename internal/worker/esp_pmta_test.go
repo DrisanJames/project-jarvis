@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -500,4 +502,66 @@ func TestVMTAPoolNext_UnmappedISP_FallsBackToGeneral(t *testing.T) {
 	ip, err := pool.next("verizon")
 	require.NoError(t, err)
 	assert.Equal(t, "gen1", ip.ID, "unmapped ISPs should fall back to general")
+}
+
+// --- negative cache (2026-11-05): an empty pool result is cached for the TTL ---
+
+func newEmptyPoolMock(t *testing.T) (*vmtaPool, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return newVMTAPool(db, "db"), mock
+}
+
+func expectEmptyPoolLoad(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`SELECT ip.id, ip.hostname, ip.status`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "status", "limit", "sent", "pool_name", "ip"}))
+	mock.ExpectQuery(`SELECT pool.name\s+FROM mailing_ip_pool_preferences`).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}))
+}
+
+func TestVMTAPool_EmptyResultIsCachedForTTL(t *testing.T) {
+	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "")
+	p, mock := newEmptyPoolMock(t)
+	expectEmptyPoolLoad(mock) // exactly ONE load for three refreshes inside the TTL
+	ctx := context.Background()
+	p.refresh(ctx, "profile-1")
+	p.refresh(ctx, "profile-1")
+	p.refresh(ctx, "profile-1")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("empty pool must be cached for the TTL: %v", err)
+	}
+	if len(p.ips) != 0 {
+		t.Fatalf("expected empty pool, got %d ips", len(p.ips))
+	}
+}
+
+func TestVMTAPool_EmptyResultReloadsAfterTTL(t *testing.T) {
+	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "")
+	p, mock := newEmptyPoolMock(t)
+	expectEmptyPoolLoad(mock)
+	expectEmptyPoolLoad(mock)
+	ctx := context.Background()
+	p.refresh(ctx, "profile-1")
+	p.loadedAt = time.Now().Add(-p.ttl - time.Second) // expire the negative entry
+	p.refresh(ctx, "profile-1")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expired negative entry must reload: %v", err)
+	}
+}
+
+func TestVMTAPool_NegativeCacheKillSwitchRestoresPerCallRefresh(t *testing.T) {
+	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "1")
+	p, mock := newEmptyPoolMock(t)
+	expectEmptyPoolLoad(mock)
+	expectEmptyPoolLoad(mock)
+	ctx := context.Background()
+	p.refresh(ctx, "profile-1")
+	p.refresh(ctx, "profile-1") // pre-fix behaviour: empty => refresh every call
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("kill switch must restore per-call refresh: %v", err)
+	}
 }

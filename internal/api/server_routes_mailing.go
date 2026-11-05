@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strconv"
 	"strings"
@@ -96,6 +97,22 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// Background-worker health (heartbeats + stall status). Root router,
 		// no auth — operators curl it during incidents; UI polls it.
 		s.router.Get("/api/worker-health", HandleWorkerHealth(db))
+
+		// Go runtime profiles behind the admin key (2026-11-05 CPU audit). The
+		// net/http/pprof import registers on http.DefaultServeMux, which this
+		// binary never serves directly (no http.Handle / ListenAndServe(nil)),
+		// so the ONLY path to a profile is this gated route. An unset
+		// ADMIN_API_KEY authorizes nobody.
+		//   curl -H "X-Admin-Key: $ADMIN_API_KEY" "$BASE/debug/pprof/profile?seconds=30" > cpu.pprof
+		//   go tool pprof -top cpu.pprof
+		s.router.Handle("/debug/pprof/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			http.DefaultServeMux.ServeHTTP(w, req)
+		}))
 
 		// Pool isolation admin endpoints — on root router to avoid chi late-registration race
 		poolIsolationSvc := &PMTACampaignService{db: db}
