@@ -237,7 +237,11 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 			go cb(prefix, groupSnapshot)
 		}
 	} else {
-		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s)", profileID, p.poolPrefix)
+		// Stamp the (empty) load so fresh() can honour the TTL. Without this
+		// the negative cache is inert — the :1236 build shipped exactly that
+		// and the warning rate did not move (22k lines / 10 min at 05:30Z).
+		p.loadedAt = time.Now()
+		log.Printf("[vmtaPool] WARNING: refresh returned 0 IPs for profile %s (prefix=%s) — cached for %s", profileID, p.poolPrefix, p.ttl)
 	}
 }
 

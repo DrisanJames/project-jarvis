@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -523,16 +525,39 @@ func expectEmptyPoolLoad(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"name"}))
 }
 
+// captureLog routes the package logger into a buffer for the test. sqlmock
+// turns an UNEXPECTED query into an error that refresh() only logs, so
+// "ExpectationsWereMet" alone cannot prove a query did not happen — the :1236
+// build shipped an inert negative cache behind exactly that blind spot.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
+
 func TestVMTAPool_EmptyResultIsCachedForTTL(t *testing.T) {
 	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "")
 	p, mock := newEmptyPoolMock(t)
+	logs := captureLog(t)
 	expectEmptyPoolLoad(mock) // exactly ONE load for three refreshes inside the TTL
 	ctx := context.Background()
 	p.refresh(ctx, "profile-1")
+	if p.loadedAt.IsZero() {
+		t.Fatal("empty result must stamp loadedAt — otherwise the TTL can never apply")
+	}
 	p.refresh(ctx, "profile-1")
 	p.refresh(ctx, "profile-1")
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("empty pool must be cached for the TTL: %v", err)
+		t.Fatalf("expected exactly one load: %v", err)
+	}
+	if strings.Contains(logs.String(), "refresh error") {
+		t.Fatalf("an extra query was issued (sqlmock rejected it): %s", logs.String())
+	}
+	if n := strings.Count(logs.String(), "refresh returned 0 IPs"); n != 1 {
+		t.Fatalf("warning must log once per load, got %d", n)
 	}
 	if len(p.ips) != 0 {
 		t.Fatalf("expected empty pool, got %d ips", len(p.ips))
@@ -542,6 +567,7 @@ func TestVMTAPool_EmptyResultIsCachedForTTL(t *testing.T) {
 func TestVMTAPool_EmptyResultReloadsAfterTTL(t *testing.T) {
 	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "")
 	p, mock := newEmptyPoolMock(t)
+	logs := captureLog(t)
 	expectEmptyPoolLoad(mock)
 	expectEmptyPoolLoad(mock)
 	ctx := context.Background()
@@ -551,11 +577,15 @@ func TestVMTAPool_EmptyResultReloadsAfterTTL(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expired negative entry must reload: %v", err)
 	}
+	if strings.Contains(logs.String(), "refresh error") {
+		t.Fatalf("unexpected extra query: %s", logs.String())
+	}
 }
 
 func TestVMTAPool_NegativeCacheKillSwitchRestoresPerCallRefresh(t *testing.T) {
 	t.Setenv("VMTA_POOL_NEGATIVE_CACHE_DISABLED", "1")
 	p, mock := newEmptyPoolMock(t)
+	logs := captureLog(t)
 	expectEmptyPoolLoad(mock)
 	expectEmptyPoolLoad(mock)
 	ctx := context.Background()
@@ -563,5 +593,8 @@ func TestVMTAPool_NegativeCacheKillSwitchRestoresPerCallRefresh(t *testing.T) {
 	p.refresh(ctx, "profile-1") // pre-fix behaviour: empty => refresh every call
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("kill switch must restore per-call refresh: %v", err)
+	}
+	if strings.Contains(logs.String(), "refresh error") {
+		t.Fatalf("unexpected extra query: %s", logs.String())
 	}
 }
