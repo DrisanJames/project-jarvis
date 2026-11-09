@@ -94,8 +94,9 @@ type predispatchSegment struct {
 	ListID     string
 	Conditions string
 	Status     string
-	BuiltAt    sql.NullTime
+	BuiltAt    sql.NullTime // last SUCCESSFUL build (the ledger only advances it on status='ok')
 	BuildState string
+	AttemptAt  sql.NullTime // the most recent build attempt, any outcome (ledger updated_at)
 }
 
 // predispatchDeps isolates the side effects so the decision logic is unit
@@ -304,6 +305,13 @@ func predispatchSegmentsToBuild(segs map[string]predispatchSegment, now time.Tim
 		if sg.BuiltAt.Valid && now.Sub(sg.BuiltAt.Time) < predispatchSegmentFresh {
 			continue
 		}
+		// A build that just failed is not retried for the same window. Each
+		// attempt holds the DB for up to 10 minutes; retrying every tick on a
+		// loaded DB fails again (2026-11-09: 384 failed vs 151 built in 24h)
+		// and starves the rebind of the time it needs.
+		if sg.BuildState == "failed" && sg.AttemptAt.Valid && now.Sub(sg.AttemptAt.Time) < predispatchSegmentFresh {
+			continue
+		}
 		// A segment with no conditions and no list is a hand-filled static
 		// segment (seed lists: WARMY-SEED-YAHOO, KUMO-SEED-OPERATOR). There is
 		// nothing to rebuild it FROM — buildSegmentQuery compiles it to WHERE
@@ -399,7 +407,7 @@ func (s *PMTACampaignService) predispatchLoadSegments(ctx context.Context, ids [
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id::text, COALESCE(s.name,''), COALESCE(s.list_id::text,''), COALESCE(s.conditions::text,'[]'),
-		       COALESCE(s.status,''), l.last_built_at, COALESCE(l.last_build_status,'')
+		       COALESCE(s.status,''), l.last_built_at, COALESCE(l.last_build_status,''), l.updated_at
 		FROM mailing_segments s
 		LEFT JOIN mailing_segment_build_ledger l ON l.segment_id = s.id
 		WHERE s.id::text = ANY($1)
@@ -410,13 +418,16 @@ func (s *PMTACampaignService) predispatchLoadSegments(ctx context.Context, ids [
 	defer rows.Close()
 	for rows.Next() {
 		var sg predispatchSegment
-		if err := rows.Scan(&sg.ID, &sg.Name, &sg.ListID, &sg.Conditions, &sg.Status, &sg.BuiltAt, &sg.BuildState); err != nil {
+		if err := rows.Scan(&sg.ID, &sg.Name, &sg.ListID, &sg.Conditions, &sg.Status, &sg.BuiltAt, &sg.BuildState, &sg.AttemptAt); err != nil {
 			return nil, err
 		}
-		// A build that ended in error must not count as fresh.
-		if sg.BuildState != "ok" && sg.BuildState != "running" {
-			sg.BuiltAt = sql.NullTime{}
-		}
+		// last_built_at is the last SUCCESSFUL build: UpsertSegmentLedger only
+		// advances it on status='ok', and MaterializeSegment swaps members in one
+		// transaction, so a later failed attempt leaves that build's members in
+		// place. It stays the freshness clock. (Nulling it on a failed attempt
+		// made every cell wait for a rebuild that kept timing out, so on
+		// 2026-11-09 the SES board mailed its 11-03 plan: DB's 11-10 cell
+		// missed 13,044 people who are in today's segments.)
 		out[sg.ID] = sg
 	}
 	return out, rows.Err()

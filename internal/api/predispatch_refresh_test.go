@@ -196,3 +196,39 @@ func TestPredispatchSkipsHandFilledSegments(t *testing.T) {
 		t.Fatalf("list-backed and conditioned segments must still be rebuilt: %v", got)
 	}
 }
+
+// 2026-11-09 regression: a segment whose latest rebuild FAILED still carries
+// its last good build (members are swapped transactionally, last_built_at only
+// advances on ok). A cell planned before that build must rebind on it, and the
+// failed segment must not be retried every tick.
+func TestPredispatchFailedRebuildKeepsLastGoodBuild(t *testing.T) {
+	now := time.Date(2026, 11, 10, 7, 0, 0, 0, time.UTC)
+	plan := time.Date(2026, 11, 3, 22, 34, 0, 0, time.UTC)
+	lastGood := time.Date(2026, 11, 9, 5, 53, 0, 0, time.UTC)
+	segs := map[string]predispatchSegment{
+		"o": {ID: "o", Name: "DB 14D Openers", Status: "active", Conditions: `{"v2":{}}`,
+			BuiltAt: nt(lastGood), BuildState: "failed", AttemptAt: nt(now.Add(-10 * time.Minute))},
+		"c": {ID: "c", Name: "DB 30D Clickers", Status: "active", Conditions: `{"v2":{}}`,
+			BuiltAt: nt(lastGood), BuildState: "failed", AttemptAt: nt(now.Add(-3 * time.Hour))},
+	}
+	cell := predispatchCell{ID: "c1", Name: "11102026 - DB - Insurify", ScheduledAt: now.Add(60 * time.Minute),
+		PlanAt: nt(plan), Segments: []string{"o", "c"}}
+	if ok, why := predispatchCellReady(cell, segs, now, 15*time.Minute); !ok {
+		t.Fatalf("cell must rebind on the last good build, got %q", why)
+	}
+	got := map[string]bool{}
+	for _, sg := range predispatchSegmentsToBuild(segs, now) {
+		got[sg.ID] = true
+	}
+	if got["o"] {
+		t.Errorf("segment that failed 10m ago must not be retried this window")
+	}
+	if !got["c"] {
+		t.Errorf("segment whose failure is 3h old should be retried")
+	}
+	// A cell planned AFTER the last good build still waits (nothing newer to mail).
+	cell.PlanAt = nt(lastGood.Add(time.Hour))
+	if ok, _ := predispatchCellReady(cell, segs, now, 15*time.Minute); ok {
+		t.Errorf("cell planned after the last good build must not rebind")
+	}
+}
