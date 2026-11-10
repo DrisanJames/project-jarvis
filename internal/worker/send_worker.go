@@ -944,7 +944,12 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 				  AND (q.locked_at IS NULL OR q.locked_at < NOW() - INTERVAL '5 minutes')
 				ORDER BY q.priority DESC, q.scheduled_at ASC
 				LIMIT $4
-				FOR UPDATE SKIP LOCKED
+				-- OF q: lock only the queue rows. Without it the JOIN also locks the
+				-- campaign row, so the per-ISP claims claimISPBatch runs in parallel for
+				-- ONE campaign (and the other ECS task's) skip each other's locked
+				-- campaign row and return 0 rows with no error (2026-11-10: 1.06M ready
+				-- rows, Microsoft claimed 56% of plan, sbcglobal/att/aol/cox 13-20%).
+				FOR UPDATE OF q SKIP LOCKED
 			)
 			RETURNING id, campaign_id, subscriber_id, subject, html_content, plain_content, offer_id, creative_id, subject_line_id, from_name_id, idempotency_key, content_snapshot_id, wave_id
 		)
