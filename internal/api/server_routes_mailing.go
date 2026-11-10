@@ -657,6 +657,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// The S3 static upload door (data_ingest_static.go): presign →
 			// complete → register; refuses a key that is not in the bucket.
 			r.Route("/data-ingest/static", NewDataIngestStaticService(db, s.partnerIngestS3).RegisterRoutes)
+			// New Data Pipeline screen (Data Center → Pipeline,
+			// data_pipeline_daily_handlers.go): POST /rollup is X-Admin-Key
+			// only; GET /summary takes the Data Center session gate.
+			r.Route("/data-pipeline", NewDataPipelineService(db).RegisterRoutes)
 
 			// Operator CSV ingestion for partner datasets
 			// (partner_csv_ingest.go): preview + commit reuse the EXACT batch

@@ -13195,6 +13195,24 @@ END $$`},
 			status          TEXT NOT NULL DEFAULT 'uploading'
 		)`},
 		{"di_idx_static_objects_org_status", `CREATE INDEX IF NOT EXISTS idx_di_static_objects_org_status ON data_ingest_static_objects (organization_id, status, uploaded_at DESC)`},
+		// data_pipeline_daily is the New Data Pipeline screen's storage (Data
+		// Center → Pipeline; POST/GET /api/mailing/data-pipeline/*,
+		// internal/api/data_pipeline_daily_handlers.go). One row per (org, Denver
+		// day, lane, isp, stage, source, sending_domain); '' = not broken out.
+		// Not data_ingest_rollup: that table has no org or sending-domain column.
+		// The PK (org_id, day, …) is the only index the summary read needs.
+		{"dp_create_data_pipeline_daily", `CREATE TABLE IF NOT EXISTS data_pipeline_daily (
+			org_id         UUID NOT NULL,
+			day            DATE NOT NULL,
+			lane           TEXT NOT NULL,
+			isp            TEXT NOT NULL,
+			stage          TEXT NOT NULL,
+			source         TEXT NOT NULL DEFAULT '',
+			sending_domain TEXT NOT NULL DEFAULT '',
+			n              BIGINT NOT NULL,
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (org_id, day, lane, isp, stage, source, sending_domain)
+		)`},
 		// LAST on purpose — see nxWaveIPRepointSQL.
 		{"nx_wave_ip_repoint_20260918_final_pass", nxWaveIPRepointSQL},
 	}...)

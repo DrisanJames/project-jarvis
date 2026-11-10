@@ -10,10 +10,13 @@ import { PartnerIngestPortal, type PartnerSection } from '../datapartners/Partne
 
 const EOCleaning = lazy(() => import('../pages/EOCleaning').then(m => ({ default: m.EOCleaning })));
 
-export type DataCenterTab = IngestView | PartnerSection | 'export';
+const PipelinePanel = lazy(() => import('./PipelinePanel').then(m => ({ default: m.PipelinePanel })));
+
+export type DataCenterTab = IngestView | PartnerSection | 'export' | 'pipeline';
 
 const TABS: { key: DataCenterTab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
+  { key: 'pipeline', label: 'Pipeline' },
   { key: 'feeds', label: 'Feeds' },
   { key: 'yesterday', label: 'Yesterday' },
   { key: 'upload', label: 'Upload' },
@@ -54,7 +57,8 @@ export const DataCenter: React.FC<{ initial?: DataCenterTab }> = ({ initial = 'o
 
       {INGEST_TABS.includes(tab) && <DataIngestPortal view={tab as IngestView} onViewChange={setTab} />}
       {tab === 'export' && <Suspense fallback={null}><EOCleaning /></Suspense>}
-      {tab !== 'export' && !INGEST_TABS.includes(tab) && <PartnerIngestPortal section={tab as PartnerSection} />}
+      {tab === 'pipeline' && <Suspense fallback={null}><PipelinePanel /></Suspense>}
+      {tab !== 'export' && tab !== 'pipeline' && !INGEST_TABS.includes(tab) && <PartnerIngestPortal section={tab as PartnerSection} />}
     </div>
   );
 };
