@@ -32,6 +32,7 @@ const (
 	pipelineAgentMaxEntries   = 100
 	pipelineAgentMaxTitle     = 300
 	pipelineAgentMaxBody      = 64 << 10
+	pipelineAgentDefaultName  = "pipeline-agent"
 )
 
 var (
@@ -47,6 +48,9 @@ type pipelineAgentEntry struct {
 	ISP    string          `json:"isp"`
 	Title  string          `json:"title"`
 	Body   json.RawMessage `json:"body"`
+	// Agent names the writer ("pipeline-agent" by default). Stored inside
+	// body.agent so the table shape is unchanged; read back from there.
+	Agent string `json:"agent"`
 }
 
 type pipelineAgentAppendRequest struct {
@@ -66,6 +70,9 @@ type pipelineAgentHeader struct {
 	StaleAfterMinutes     float64         `json:"stale_after_minutes"`
 	Mandate               json.RawMessage `json:"mandate"`
 	MandateAt             *string         `json:"mandate_at"`
+	// Scorecard: measured from the log over the last 24 hours and 7 days
+	// (data_pipeline_agent_scorecard.go).
+	Scorecard *pipelineAgentScorecard `json:"scorecard"`
 }
 
 type pipelineAgentResponse struct {
@@ -126,9 +133,26 @@ func validatePipelineAgentEntries(entries []pipelineAgentEntry, now time.Time) e
 			return fmt.Errorf("entries[%d]: body larger than %d bytes", i, pipelineAgentMaxBody)
 		}
 		var obj map[string]interface{}
-		if err := json.Unmarshal(e.Body, &obj); err != nil {
+		if err := json.Unmarshal(e.Body, &obj); err != nil || obj == nil {
 			return fmt.Errorf("entries[%d]: body must be a JSON object", i)
 		}
+		e.Agent = strings.TrimSpace(e.Agent)
+		if e.Agent == "" {
+			if a, ok := obj["agent"].(string); ok && strings.TrimSpace(a) != "" {
+				e.Agent = strings.TrimSpace(a)
+			} else {
+				e.Agent = pipelineAgentDefaultName
+			}
+		}
+		if len(e.Agent) > 64 {
+			return fmt.Errorf("entries[%d]: agent at most 64 characters", i)
+		}
+		obj["agent"] = e.Agent
+		nb, err := json.Marshal(obj)
+		if err != nil {
+			return fmt.Errorf("entries[%d]: body: %v", i, err)
+		}
+		e.Body = nb
 		if strings.TrimSpace(e.At) == "" {
 			e.At = now.UTC().Format(time.RFC3339)
 		} else if t, err := time.Parse(time.RFC3339, e.At); err != nil {
@@ -237,6 +261,7 @@ func (s *DataPipelineService) HandleAgentLog(w http.ResponseWriter, r *http.Requ
 		}
 		e.At = at.UTC().Format(time.RFC3339)
 		e.Body = json.RawMessage(body)
+		e.Agent = agentNameFromBody(e.Body)
 		out.Entries = append(out.Entries, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -272,7 +297,14 @@ func (s *DataPipelineService) HandleAgentLog(w http.ResponseWriter, r *http.Requ
 		at := mandateAt.UTC().Format(time.RFC3339)
 		out.Header.Mandate, out.Header.MandateAt = json.RawMessage(mandate), &at
 	}
+	sc, err := s.agentScorecard(qctx, out.OrgID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "agent_scorecard_query_failed: "+err.Error())
+		return
+	}
+	out.Header.Scorecard = sc
 	out.mark("entries", fieldMeasured)
+	out.mark("scorecard", fieldDerived)
 	out.markAll(fieldDerived, "stale", "minutes_since_last_check")
 	respondJSON(w, http.StatusOK, out)
 }

@@ -164,6 +164,34 @@ export interface PipelineAgentEntry {
   isp: string;
   title: string;
   body: Record<string, unknown>;
+  /** who posted it ("pipeline-agent" by default) */
+  agent: string;
+}
+
+/** pipelineAgentWindow (data_pipeline_agent_scorecard.go) */
+export interface PipelineAgentWindow {
+  checks: number;
+  ok: number;
+  warn: number;
+  fail: number;
+  pass_rate: number | null;
+  cycles: number;
+  avg_minutes_between_cycles: number | null;
+  longest_gap_minutes: number | null;
+  alerts: number;
+  decisions: number;
+  repairs: number;
+  learned: number;
+  forecast_mape: number | null;
+  forecast_samples: number;
+}
+
+export interface PipelineAgentScorecard {
+  last_24h: PipelineAgentWindow;
+  last_7d: PipelineAgentWindow;
+  open_failures: { title: string; since: string; age_minutes: number; agent: string }[];
+  checks_latest: { title: string; status: 'ok' | 'warn' | 'fail'; at: string; agent: string }[];
+  truncated: boolean;
 }
 
 /** pipelineAgentResponse */
@@ -179,6 +207,7 @@ export interface PipelineAgentLog {
     stale_after_minutes: number;
     mandate: Record<string, unknown> | null;
     mandate_at: string | null;
+    scorecard: PipelineAgentScorecard | null;
   };
   entries: PipelineAgentEntry[];
 }

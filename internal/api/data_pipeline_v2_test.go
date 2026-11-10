@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"regexp"
 	"testing"
@@ -173,7 +174,7 @@ func TestDataPipelineAgent_PostValidatesAndAppendsOrgScoped(t *testing.T) {
 	other := "11111111-2222-3333-4444-555555555555"
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO data_pipeline_agent_log")).
-		WithArgs(other, "2026-11-10T19:00:00Z", "check", "ok", "", "Reservoirs checked", `{"isps_checked":5}`).
+		WithArgs(other, "2026-11-10T19:00:00Z", "check", "ok", "", "Reservoirs checked", `{"agent":"pipeline-agent","isps_checked":5}`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	hdr := adminHdr()
@@ -203,6 +204,9 @@ func agentGet(t *testing.T, checkAt *time.Time, org string) pipelineAgentRespons
 	}
 	mock.ExpectQuery(regexp.QuoteMeta("kind = 'report'")).WithArgs(org).
 		WillReturnRows(sqlmock.NewRows([]string{"at", "mandate"}).AddRow(at, `{"may":["order cleaning up to $500/month"]}`))
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE org_id = $1 AND at >= $2")).WithArgs(org, sqlmock.AnyArg(), pipelineAgentScorecardRows).
+		WillReturnRows(sqlmock.NewRows([]string{"at", "kind", "status", "title", "body"}).
+			AddRow(at, "check", "ok", "Reservoirs", `{"agent":"monitor"}`))
 	hdr := sessionHdr()
 	hdr["X-Organization-ID"] = org
 	rec := diDo(h, http.MethodGet, "/api/mailing/data-pipeline/agent?limit=50", "", hdr)
@@ -235,5 +239,87 @@ func TestDataPipelineAgent_StaleFlag(t *testing.T) {
 	other := "11111111-2222-3333-4444-555555555555"
 	if out := agentGet(t, nil, other); !out.Header.Stale || out.Header.LastCheckAt != nil || out.OrgID != other {
 		t.Fatalf("never checked in: want stale + null, got %+v", out.Header)
+	}
+}
+
+func TestDataPipelineAgent_ScorecardInHeader(t *testing.T) {
+	fresh := time.Date(2026, 11, 10, 18, 30, 0, 0, time.UTC)
+	out := agentGet(t, &fresh, diOrg)
+	sc := out.Header.Scorecard
+	if sc == nil || sc.Last24h.Checks != 1 || len(sc.ChecksLatest) != 1 || sc.ChecksLatest[0].Agent != "monitor" {
+		t.Fatalf("scorecard: %+v", sc)
+	}
+}
+
+func TestDataPipelineAgent_ScorecardMaths(t *testing.T) {
+	now := time.Date(2026, 11, 10, 19, 0, 0, 0, time.UTC)
+	at := func(minAgo int) time.Time { return now.Add(-time.Duration(minAgo) * time.Minute) }
+	row := func(m int, kind, status, title string, body map[string]interface{}) agentLogRow {
+		if body == nil {
+			body = map[string]interface{}{}
+		}
+		return agentLogRow{at: at(m), kind: kind, status: status, title: title, body: body, agent: "pipeline-agent"}
+	}
+	log := []agentLogRow{
+		// cycle 1 (120 min ago): two checks 1 minute apart
+		row(120, "check", "fail", "Microsoft reservoir", nil),
+		row(119, "check", "ok", "Apple reservoir", nil),
+		// cycle 2 (60 min ago): Microsoft fails again, Apple warns
+		row(60, "check", "fail", "Microsoft reservoir", nil),
+		row(60, "check", "warn", "Apple reservoir", nil),
+		// cycle 3 (30 min ago): Microsoft cleared by ok; Comcast fails and stays open
+		row(30, "check", "ok", "Microsoft reservoir", nil),
+		row(29, "check", "fail", "Comcast reservoir", nil),
+		row(29, "alert", "warn", "Comcast low", nil),
+		row(28, "decision", "ok", "Order cleaning", nil),
+		row(27, "repair", "ok", "Re-ran draw", nil),
+		row(26, "learned", "ok", "forecast", map[string]interface{}{"forecast": 110.0, "actual": 100.0}),
+		row(25, "learned", "ok", "forecast", map[string]interface{}{"forecast": 70.0, "actual": 100.0}),
+		row(24, "learned", "ok", "no numbers", map[string]interface{}{"forecast": "high"}),
+		// 2 days ago: outside 24h, inside 7d
+		row(2*24*60, "check", "ok", "Apple reservoir", nil),
+	}
+	sc := scorePipelineAgent(log, now)
+	w := sc.Last24h
+	if w.Checks != 6 || w.OK != 2 || w.Warn != 1 || w.Fail != 3 {
+		t.Fatalf("counts: %+v", w)
+	}
+	if w.PassRate == nil || math.Abs(*w.PassRate-100.0/3) > 1e-9 {
+		t.Fatalf("pass rate: want 33.3, got %v", w.PassRate)
+	}
+	if w.Cycles != 3 || w.AvgMinutesBetweenCycles == nil || *w.AvgMinutesBetweenCycles != 45 {
+		t.Fatalf("cycles: want 3 cycles starting 120, 60, 30 min ago = 45 min apart, got %d %v", w.Cycles, w.AvgMinutesBetweenCycles)
+	}
+	if w.LongestGapMinutes == nil || *w.LongestGapMinutes != 59 {
+		t.Fatalf("longest gap: want 59 (119→60), got %v", w.LongestGapMinutes)
+	}
+	if w.Alerts != 1 || w.Decisions != 1 || w.Repairs != 1 || w.Learned != 3 {
+		t.Fatalf("activity counts: %+v", w)
+	}
+	if w.ForecastSamples != 2 || w.ForecastMAPE == nil || *w.ForecastMAPE != 20 {
+		t.Fatalf("forecast MAPE: want 20 over 2, got %v over %d", w.ForecastMAPE, w.ForecastSamples)
+	}
+	if sc.Last7d.Checks != 7 {
+		t.Fatalf("7d checks: want 7, got %d", sc.Last7d.Checks)
+	}
+	// Microsoft's fails were cleared by the later ok; Comcast stays open, 29 min old.
+	if len(sc.OpenFailures) != 1 || sc.OpenFailures[0].Title != "Comcast reservoir" || sc.OpenFailures[0].AgeMinutes != 29 {
+		t.Fatalf("open failures: %+v", sc.OpenFailures)
+	}
+	latest := map[string]string{}
+	for _, c := range sc.ChecksLatest {
+		latest[c.Title] = c.Status
+	}
+	if latest["Microsoft reservoir"] != "ok" || latest["Apple reservoir"] != "warn" || latest["Comcast reservoir"] != "fail" {
+		t.Fatalf("latest per check: %+v", latest)
+	}
+	// A fail followed only by a warn stays open.
+	sc2 := scorePipelineAgent([]agentLogRow{row(10, "check", "fail", "X", nil), row(5, "check", "warn", "X", nil)}, now)
+	if len(sc2.OpenFailures) != 1 || sc2.OpenFailures[0].AgeMinutes != 10 {
+		t.Fatalf("warn must not clear a failure: %+v", sc2.OpenFailures)
+	}
+	// No checks → nil rates, zero counts.
+	if e := scorePipelineAgent(nil, now); e.Last24h.PassRate != nil || e.Last24h.LongestGapMinutes != nil {
+		t.Fatalf("empty scorecard: %+v", e.Last24h)
 	}
 }

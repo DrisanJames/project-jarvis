@@ -110,17 +110,36 @@ const KeyValues: React.FC<{ obj: Record<string, unknown> | null | undefined }> =
 
 // ── (1) agent strip ─────────────────────────────────────────────────────────
 
+const fmtMinutes = (m: number) => (m < 120 ? `${Math.round(m)} minutes` : `${(m / 60).toFixed(1)} hours`);
+
 const AgentStrip: React.FC = () => {
   const poll = usePolling<PipelineAgentLog>((signal) => fetchPipelineAgent(50, signal), POLL_MS, []);
   const [open, setOpen] = useState(false);
+  const [showMandate, setShowMandate] = useState(false);
   const [openEntry, setOpenEntry] = useState<number | null>(null);
   const a = poll.data;
   if (poll.loading && !a) return <Panel><div style={{ fontSize: 12, color: colors.textMuted }}>Loading the pipeline agent…</div></Panel>;
   if (!a) return <SectionError label="Pipeline agent" error={poll.error ?? undefined} onRetry={poll.refresh} />;
   const h = a.header;
+  if (a.entries.length === 0 && !h.last_check_at) {
+    return (
+      <Panel accent={colors.idle}>
+        <SectionHeader title="Pipeline agent" icon={faRobot} />
+        <EmptyState icon={faRobot} title="The agent has not reported yet" hint={`It counts as stopped until it posts a check; it goes stale after ${h.stale_after_minutes} minutes without one.`} />
+        <FreshnessLine asOf={a.as_of} source={a.source} />
+      </Panel>
+    );
+  }
   const running = !h.stale;
+  const sc = h.scorecard;
+  const day = sc?.last_24h;
+  const week = sc?.last_7d;
   const recent = a.entries.filter((e) => e.kind === 'decision' || e.kind === 'alert').slice(0, 5);
   const shown = open ? a.entries : recent;
+  const tile = (label: string, value: React.ReactNode, sub?: React.ReactNode, color?: string, title?: string) => (
+    <Panel style={{ padding: '10px 12px' }}><Stat label={label} value={value} sub={sub} color={color} title={title} /></Panel>
+  );
+  const none = <i style={{ color: colors.textFaint, fontWeight: 400 }}>{NOT_REPORTED}</i>;
   return (
     <Panel accent={running ? statusColor(h.status) : colors.danger}>
       <SectionHeader
@@ -128,14 +147,74 @@ const AgentStrip: React.FC = () => {
         icon={faRobot}
         right={<button type="button" style={btnStyle} onClick={() => setOpen(!open)}>{open ? 'Show last 5 decisions and alerts' : `Show all ${a.entries.length} entries`}</button>}
       />
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, marginBottom: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, marginBottom: 10 }}>
         <Stat label="Running" value={running ? 'Yes' : 'No'} color={running ? colors.successText : colors.dangerText}
-          sub={h.last_check_at ? `stale after ${h.stale_after_minutes} minutes without a check` : 'has never checked in'} />
-        <Stat label="Last check" value={h.last_check_at ? fmtTimeMT(h.last_check_at) : NOT_REPORTED}
-          sub={h.minutes_since_last_check != null ? `${Math.round(h.minutes_since_last_check)} minutes ago` : undefined} />
+          sub={h.last_check_at ? `stale after ${h.stale_after_minutes} minutes without a check` : 'has never posted a check'} />
+        <Stat label="Last check" value={h.last_check_at ? fmtTimeMT(h.last_check_at) : NOT_REPORTED} />
         <Stat label="Overall state" value={h.status ? STATUS_LABEL[h.status] ?? h.status : NOT_REPORTED} color={statusColor(h.status)} />
       </div>
       {poll.error && <div style={{ fontSize: 12, color: colors.warningText }}>Showing the last good read — refresh failed: {poll.error}</div>}
+
+      {/* scorecard */}
+      {sc && day && week && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 6 }}>
+            {tile('Checks in the last 24 hours', day.checks.toLocaleString(), `${week.checks.toLocaleString()} in 7 days · ${day.cycles} cycles`)}
+            {tile('Passed', day.ok.toLocaleString(), day.pass_rate != null ? `${fmtPct(day.pass_rate)} of checks (7 days: ${week.pass_rate != null ? fmtPct(week.pass_rate) : 'none'})` : 'no checks', colors.successText, 'Checks that returned ok ÷ all checks')}
+            {tile('Warnings', day.warn.toLocaleString(), `${week.warn.toLocaleString()} in 7 days`, day.warn > 0 ? colors.warningText : undefined)}
+            {tile('Failures', day.fail.toLocaleString(), `${week.fail.toLocaleString()} in 7 days`, day.fail > 0 ? colors.dangerText : undefined)}
+            {tile('Open problems', sc.open_failures.length.toLocaleString(), 'failed checks with no later pass', sc.open_failures.length > 0 ? colors.dangerText : undefined)}
+            {tile('Alerts sent', day.alerts.toLocaleString(), `${day.decisions} decisions sent to you · 7 days: ${week.alerts} alerts`)}
+            {tile('Repairs made', day.repairs.toLocaleString(), `${day.learned} facts learned · 7 days: ${week.repairs} repairs`)}
+            {tile('Minutes since last check', h.minutes_since_last_check != null ? Math.round(h.minutes_since_last_check).toLocaleString() : none,
+              day.avg_minutes_between_cycles != null ? `cycles every ${fmtMinutes(day.avg_minutes_between_cycles)} on average · longest gap ${day.longest_gap_minutes != null ? fmtMinutes(day.longest_gap_minutes) : 'unknown'}` : (day.longest_gap_minutes != null ? `longest gap ${fmtMinutes(day.longest_gap_minutes)}` : undefined),
+              h.stale ? colors.dangerText : undefined)}
+            {tile('Forecast accuracy', week.forecast_mape != null ? `${fmtPct(week.forecast_mape)} average miss` : none,
+              week.forecast_samples > 0 ? `over ${week.forecast_samples} forecasts in 7 days` : 'no forecasts with a measured result yet', undefined,
+              'Mean absolute percent error: how far each forecast was from what actually happened')}
+          </div>
+          {sc.truncated && <NoteBanner label="Incomplete" note="More than 20,000 log entries in 7 days; the scorecard covers the newest 20,000." />}
+          {sc.open_failures.length > 0 && (
+            <div style={{ ...scroll, marginBottom: 10 }}>
+              <table style={tableStyle}>
+                <thead><tr><th style={thStyle}>Open problem</th><th style={thStyle}>Failing since</th><th style={numTh}>Open for</th><th style={thStyle}>Reported by</th></tr></thead>
+                <tbody>
+                  {sc.open_failures.map((o) => (
+                    <tr key={o.title}>
+                      <td style={{ ...tdStyle, color: colors.dangerText }}>{o.title}</td>
+                      <td style={tdStyle}>{fmtTimeMT(o.since)}</td>
+                      <td style={numTd}>{fmtMinutes(o.age_minutes)}</td>
+                      <td style={tdStyle}>{o.agent}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ fontSize: 12, fontWeight: 700, margin: '6px 0' }}>Each check, latest result</div>
+          {sc.checks_latest.length === 0 ? (
+            <div style={{ fontSize: 12, color: colors.textFaint }}>No checks in the last 7 days.</div>
+          ) : (
+            <div style={{ ...scroll, marginBottom: 10 }}>
+              <table style={tableStyle}>
+                <thead><tr><th style={thStyle}>Check</th><th style={thStyle}>Latest result</th><th style={thStyle}>When</th><th style={thStyle}>Reported by</th></tr></thead>
+                <tbody>
+                  {sc.checks_latest.map((c) => (
+                    <tr key={c.title}>
+                      <td style={tdStyle}>{c.title}</td>
+                      <td style={tdStyle}><Pill color={statusColor(c.status)}>{STATUS_LABEL[c.status] ?? c.status}</Pill></td>
+                      <td style={tdStyle}>{fmtTimeMT(c.at)}</td>
+                      <td style={tdStyle}>{c.agent}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      <div style={{ fontSize: 12, fontWeight: 700, margin: '6px 0' }}>{open ? 'Everything the agent posted' : 'Last 5 decisions and alerts'}</div>
       {shown.length === 0 ? (
         <div style={{ fontSize: 12, color: colors.textFaint }}>{open ? 'The agent has posted nothing yet.' : 'No decisions or alerts posted yet.'}</div>
       ) : (
@@ -148,11 +227,13 @@ const AgentStrip: React.FC = () => {
                 <th style={thStyle}>State</th>
                 <th style={thStyle}>Mailbox provider</th>
                 <th style={thStyle}>What happened</th>
+                <th style={thStyle}>Reported by</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((e, i) => {
                 const key = e.id ?? i;
+                const { agent: _agent, ...details } = e.body ?? {};
                 return (
                   <React.Fragment key={key}>
                     <tr style={{ cursor: 'pointer' }} onClick={() => setOpenEntry(openEntry === key ? null : key)}>
@@ -161,9 +242,10 @@ const AgentStrip: React.FC = () => {
                       <td style={tdStyle}><Pill color={statusColor(e.status)}>{STATUS_LABEL[e.status] ?? e.status}</Pill></td>
                       <td style={tdStyle}>{e.isp ? ispLabel(e.isp) : 'All'}</td>
                       <td style={tdStyle}>{openEntry === key ? '▾' : '▸'} {e.title}</td>
+                      <td style={tdStyle}>{e.agent}</td>
                     </tr>
                     {openEntry === key && (
-                      <tr><td colSpan={5} style={{ ...tdStyle, paddingLeft: 30 }}><KeyValues obj={e.body} /></td></tr>
+                      <tr><td colSpan={6} style={{ ...tdStyle, paddingLeft: 30 }}><KeyValues obj={details} /></td></tr>
                     )}
                   </React.Fragment>
                 );
@@ -173,13 +255,15 @@ const AgentStrip: React.FC = () => {
         </div>
       )}
       <div style={{ marginTop: 10 }}>
-        <div style={{ fontSize: 12, fontWeight: 700 }}>What the agent is allowed to do</div>
-        {h.mandate ? (
+        <button type="button" style={{ ...btnStyle, padding: '4px 10px' }} onClick={() => setShowMandate(!showMandate)}>
+          {showMandate ? '▾' : '▸'} What the agent is allowed to do
+        </button>
+        {showMandate && (h.mandate ? (
           <>
             <KeyValues obj={h.mandate} />
             {h.mandate_at && <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>posted {fmtTimeMT(h.mandate_at)}</div>}
           </>
-        ) : <div style={{ fontSize: 12, color: colors.textFaint, fontStyle: 'italic' }}>{NOT_REPORTED}</div>}
+        ) : <div style={{ fontSize: 12, color: colors.textFaint, fontStyle: 'italic', marginTop: 4 }}>{NOT_REPORTED}</div>)}
       </div>
       <FreshnessLine asOf={a.as_of} source={a.source} />
     </Panel>
