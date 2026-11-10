@@ -679,6 +679,77 @@ func weekdayIndex(day string) (int, bool) {
 	}
 }
 
+// boundPriorityToInclusion makes inclusion_segments the bound of a payload's
+// segment audience. Returns how many segment entries it dropped.
+//
+// WHY. When send_priority is non-empty the planner streams ONLY send_priority
+// (the send_priority branch below never reads inclusion_segments), and the
+// reserved-first pass streams every segment_reserves entry. A payload cloned
+// from a board cell and then narrowed (inclusion_segments cut to one segment,
+// send_priority left as the source's whole engaged program) therefore mailed
+// the source's audience, not the narrowed one: 2026-11-10 S1101, inclusion =
+// one 9,272-member static segment, send_priority = the brand's 5 engaged
+// segments -> 63,625 recipients, 4,163 of them in the listed segment.
+//
+// OPT-IN via input.AudienceBoundToInclusion. Board cells rely on send_priority
+// carrying segments beyond inclusion_segments (224 of 511 live cells with a
+// send_priority in the 7 days to 2026-11-09, e.g. "<CODE> 30D/60D Openers"),
+// so the default stays unchanged.
+//
+// Rule, when set and inclusion_segments is non-empty: segment-type send_priority
+// items and segment_reserves whose segment is not in inclusion_segments are
+// dropped; when anything was dropped, inclusion segments missing from
+// send_priority are appended so the listed audience is drained. Payloads whose
+// send_priority segments are a subset of inclusion_segments are untouched.
+// List items are untouched.
+func boundPriorityToInclusion(input *engine.PMTACampaignInput) int {
+	if input == nil || !input.AudienceBoundToInclusion || len(input.InclusionSegments) == 0 {
+		return 0
+	}
+	incl := make(map[string]bool, len(input.InclusionSegments))
+	for _, s := range input.InclusionSegments {
+		incl[strings.TrimSpace(s)] = true
+	}
+	dropped := 0
+	if len(input.SendPriority) > 0 {
+		kept := make([]engine.PriorityItem, 0, len(input.SendPriority))
+		have := make(map[string]bool, len(input.SendPriority))
+		for _, it := range input.SendPriority {
+			if it.Type == "segment" {
+				id := strings.TrimSpace(it.ID)
+				if !incl[id] {
+					dropped++
+					continue
+				}
+				have[id] = true
+			}
+			kept = append(kept, it)
+		}
+		if dropped > 0 {
+			for _, s := range input.InclusionSegments {
+				id := strings.TrimSpace(s)
+				if !have[id] {
+					kept = append(kept, engine.PriorityItem{ID: id, Type: "segment"})
+					have[id] = true
+				}
+			}
+		}
+		input.SendPriority = kept
+	}
+	if len(input.SegmentReserves) > 0 {
+		kept := make([]engine.SegmentReserve, 0, len(input.SegmentReserves))
+		for _, sr := range input.SegmentReserves {
+			if !incl[strings.TrimSpace(sr.SegmentID)] {
+				dropped++
+				continue
+			}
+			kept = append(kept, sr)
+		}
+		input.SegmentReserves = kept
+	}
+	return dropped
+}
+
 func planPMTAAudience(
 	ctx context.Context,
 	db dbQuerier,
@@ -691,6 +762,11 @@ func planPMTAAudience(
 ) (pmtaAudiencePlan, error) {
 	planStart := time.Now()
 	log.Printf("[PlanAudience] starting for campaign %s (%d inclusion lists, %d ISP plans)", input.CampaignID, len(input.InclusionLists), len(normalized.Plans))
+	if dropped := boundPriorityToInclusion(&input); dropped > 0 {
+		log.Printf("[PlanAudience] campaign %s: %d send_priority/segment_reserves segment(s) not in inclusion_segments dropped — "+
+			"inclusion_segments bounds the audience (send_priority now %d item(s), %d inclusion segment(s))",
+			input.CampaignID, dropped, len(input.SendPriority), len(input.InclusionSegments))
+	}
 
 	// Per-(sending domain × ISP) touch spacing, loaded ONCE per plan
 	// (isp_touch_policy.go). Empty = no cap, which is the pre-policy

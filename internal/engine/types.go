@@ -736,6 +736,15 @@ type PMTACampaignInput struct {
 	// of the SDS pure-pull.
 	UseMasterSelection *bool `json:"use_master_selection,omitempty"`
 
+	// AudienceBoundToInclusion, when true, makes InclusionSegments the bound of
+	// the segment audience: SendPriority segment items and SegmentReserves not
+	// in InclusionSegments are dropped at plan time (boundPriorityToInclusion,
+	// api/pmta_campaign_planner.go). Default false keeps the board behaviour,
+	// where SendPriority deliberately carries segments beyond InclusionSegments
+	// (e.g. "<CODE> 30D/60D Openers"). Set by narrowed cells (agents/seslane
+	// stage.narrow) — 2026-11-10 S1101 mailed the whole engaged program without it.
+	AudienceBoundToInclusion bool `json:"audience_bound_to_inclusion,omitempty"`
+
 	// ContentLocked, when non-nil, is written into mailing_campaigns.content_locked
 	// at deploy time. When true the PMTA wave dispatcher skips subject/HTML
 	// fingerprint mutations (mutateSubjectLine, mutateHTMLHash) — the approved
