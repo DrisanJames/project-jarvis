@@ -107,7 +107,7 @@ func TestDataPipelineRollup_EnumValidation(t *testing.T) {
 	bad := map[string]string{
 		"lane":      `{"rows":[{"day":"2026-11-10","lane":"pmta","isp":"apple","stage":"clean","n":1}]}`,
 		"isp":       `{"rows":[{"day":"2026-11-10","lane":"ses","isp":"gmail","stage":"clean","n":1}]}`,
-		"stage":     `{"rows":[{"day":"2026-11-10","lane":"ses","isp":"apple","stage":"sent","n":1}]}`,
+		"stage":     `{"rows":[{"day":"2026-11-10","lane":"ses","isp":"apple","stage":"opened","n":1}]}`,
 		"day":       `{"rows":[{"day":"11/10/2026","lane":"ses","isp":"apple","stage":"clean","n":1}]}`,
 		"n missing": `{"rows":[{"day":"2026-11-10","lane":"ses","isp":"apple","stage":"clean"}]}`,
 		"n < 0":     `{"rows":[{"day":"2026-11-10","lane":"ses","isp":"apple","stage":"clean","n":-1}]}`,

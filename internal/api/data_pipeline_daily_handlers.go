@@ -24,8 +24,12 @@ package api
 // the wire and "not yet measured" on screen. A lane total over ISPs that are
 // partly missing names the missing ISPs in degraded[].
 //
-// WINDSTREAM is a sub-row of the long tail: longtail already includes it, so
-// every lane / domain / source total skips the windstream rows.
+// SUB-ROWS: windstream is inside longtail; yahoo, aol, att, sbcglobal, cox,
+// verizon and frontier are inside yahoo_family (the roll-up the writer posts).
+// Every lane / domain / source total skips sub-rows.
+//
+//	POST /agent    X-Admin-Key ONLY — the pipeline agent appends log entries.
+//	GET  /agent    session — latest entries + check-in header (data_pipeline_agent.go).
 
 import (
 	"context"
@@ -52,24 +56,41 @@ const (
 	pipelineDaysDefault    = 14
 	pipelineDaysMax        = 60
 	pipelineAvgWindow      = 7
-	// pipelineRollupMaxRows bounds one POST (one day is ~6 ISPs × 12 stages ×
-	// ~30 sending domains plus the source rows, well under this).
-	pipelineRollupMaxRows = 2000
+	// pipelineRollupMaxRows bounds one POST (one day is ~13 ISPs × 28 stages
+	// for the totals plus ~4 stages per sending domain × ISP plus source rows).
+	pipelineRollupMaxRows = 5000
 	pipelineQueryTimeout  = 20 * time.Second
 	pipelineWriteTimeout  = 25 * time.Second
 	pipelineMaxTextLen    = 253
+	// pipelineContractTolerance: introduced may exceed a domain × ISP contract
+	// by this share before it is flagged over contract (plan DoD: ±5%).
+	pipelineContractTolerance = 0.05
 )
 
 // The enumerations the POST validates (plan "Screen data contract").
 var (
 	pipelineLanes = []string{"ses"}
-	// Display order. windstream is the long tail's sub-row.
-	pipelineISPs   = []string{"microsoft", "apple", "comcast", "yahoo_family", "longtail", "windstream"}
+	// Display order: each parent is followed by its sub-rows. A sub-row is
+	// already inside its parent and is never added to a total.
+	pipelineISPs = []string{
+		"microsoft", "apple", "comcast",
+		"yahoo_family", "yahoo", "aol", "att", "sbcglobal", "cox", "verizon", "frontier",
+		"longtail", "windstream",
+	}
 	pipelineStages = []string{
 		"received", "raw", "cleaned_ok", "cleaned_rejected", "clean", "unique_mailed",
 		"target", "contract", "first_mailed", "in_funnel", "promoted", "retired",
+		// v2 (2026-11-10 screen v2)
+		"dirty_outside_queue", "touch_1", "touch_2", "touch_3", "touch_4", "touch_5",
+		"cohort_mailed", "cohort_activated", "ramp_target",
+		"cleaning_ordered", "cleaning_passed", "cleaning_cost_cents",
+		"arrivals", "sent", "delivered", "deferred",
 	}
-	pipelineISPParent = map[string]string{"windstream": "longtail"}
+	pipelineISPParent = map[string]string{
+		"windstream": "longtail",
+		"yahoo":      "yahoo_family", "aol": "yahoo_family", "att": "yahoo_family", "sbcglobal": "yahoo_family",
+		"cox": "yahoo_family", "verizon": "yahoo_family", "frontier": "yahoo_family",
+	}
 	// The funnel strip, in order.
 	pipelineFunnel = []string{"received", "cleaned_ok", "clean", "first_mailed", "promoted"}
 )
@@ -98,6 +119,8 @@ func NewDataPipelineService(db *sql.DB) *DataPipelineService {
 func (s *DataPipelineService) RegisterRoutes(r chi.Router) {
 	r.With(dataIngestAuth).Get("/summary", s.HandleSummary)
 	r.With(dataPipelineAdminOnly).Post("/rollup", s.HandleRollup)
+	r.With(dataIngestAuth).Get("/agent", s.HandleAgentLog)
+	r.With(dataPipelineAdminOnly).Post("/agent", s.HandleAgentAppend)
 }
 
 // dataPipelineAdminOnly: closed by default — an UNSET ADMIN_API_KEY authorizes
@@ -261,24 +284,124 @@ type pipelineISP struct {
 	Avg7d map[string]*float64 `json:"avg_7d"`
 }
 
-// pipelineFigures is shared by an ISP row and the lane total.
+// pipelineFigures is shared by an ISP row and the lane total. One field per
+// stage (latest day), then the derived values.
 type pipelineFigures struct {
-	Received        *int64   `json:"received"`
-	Raw             *int64   `json:"raw"`
-	CleanedOK       *int64   `json:"cleaned_ok"`
-	CleanedRejected *int64   `json:"cleaned_rejected"`
-	Clean           *int64   `json:"clean"`
-	UniqueMailed    *int64   `json:"unique_mailed"`
-	Target          *int64   `json:"target"`
-	Contract        *int64   `json:"contract"`
-	FirstMailed     *int64   `json:"first_mailed"`
-	InFunnel        *int64   `json:"in_funnel"`
-	Promoted        *int64   `json:"promoted"`
-	Retired         *int64   `json:"retired"`
-	DaysOfSupply    *float64 `json:"days_of_supply"`
-	PctOfTarget     *float64 `json:"pct_of_target"`
-	NewShare        *float64 `json:"new_share"`
-	Low             bool     `json:"low"`
+	Received          *int64 `json:"received"`
+	Raw               *int64 `json:"raw"`
+	CleanedOK         *int64 `json:"cleaned_ok"`
+	CleanedRejected   *int64 `json:"cleaned_rejected"`
+	Clean             *int64 `json:"clean"`
+	UniqueMailed      *int64 `json:"unique_mailed"`
+	Target            *int64 `json:"target"`
+	Contract          *int64 `json:"contract"`
+	FirstMailed       *int64 `json:"first_mailed"`
+	InFunnel          *int64 `json:"in_funnel"`
+	Promoted          *int64 `json:"promoted"`
+	Retired           *int64 `json:"retired"`
+	DirtyOutsideQueue *int64 `json:"dirty_outside_queue"`
+	Touch1            *int64 `json:"touch_1"`
+	Touch2            *int64 `json:"touch_2"`
+	Touch3            *int64 `json:"touch_3"`
+	Touch4            *int64 `json:"touch_4"`
+	Touch5            *int64 `json:"touch_5"`
+	CohortMailed      *int64 `json:"cohort_mailed"`
+	CohortActivated   *int64 `json:"cohort_activated"`
+	RampTarget        *int64 `json:"ramp_target"`
+	CleaningOrdered   *int64 `json:"cleaning_ordered"`
+	CleaningPassed    *int64 `json:"cleaning_passed"`
+	CleaningCostCents *int64 `json:"cleaning_cost_cents"`
+	Arrivals          *int64 `json:"arrivals"`
+	Sent              *int64 `json:"sent"`
+	Delivered         *int64 `json:"delivered"`
+	Deferred          *int64 `json:"deferred"`
+
+	DaysOfSupply *float64 `json:"days_of_supply"`
+	PctOfTarget  *float64 `json:"pct_of_target"`
+	NewShare     *float64 `json:"new_share"`
+	Low          bool     `json:"low"`
+	// Σ cohort_activated ÷ Σ cohort_mailed × 100 over the cohort days in the
+	// last 7 days (days with both counts only).
+	ActivationRate7d *float64 `json:"activation_rate_7d"`
+	CleaningPassRate *float64 `json:"cleaning_pass_rate"`
+	DeliveredRate    *float64 `json:"delivered_rate"`
+	DeferredRate     *float64 `json:"deferred_rate"`
+}
+
+// slot maps a stage name to its field — the ONE table set/get use.
+func (f *pipelineFigures) slot(stage string) **int64 {
+	switch stage {
+	case "received":
+		return &f.Received
+	case "raw":
+		return &f.Raw
+	case "cleaned_ok":
+		return &f.CleanedOK
+	case "cleaned_rejected":
+		return &f.CleanedRejected
+	case "clean":
+		return &f.Clean
+	case "unique_mailed":
+		return &f.UniqueMailed
+	case "target":
+		return &f.Target
+	case "contract":
+		return &f.Contract
+	case "first_mailed":
+		return &f.FirstMailed
+	case "in_funnel":
+		return &f.InFunnel
+	case "promoted":
+		return &f.Promoted
+	case "retired":
+		return &f.Retired
+	case "dirty_outside_queue":
+		return &f.DirtyOutsideQueue
+	case "touch_1":
+		return &f.Touch1
+	case "touch_2":
+		return &f.Touch2
+	case "touch_3":
+		return &f.Touch3
+	case "touch_4":
+		return &f.Touch4
+	case "touch_5":
+		return &f.Touch5
+	case "cohort_mailed":
+		return &f.CohortMailed
+	case "cohort_activated":
+		return &f.CohortActivated
+	case "ramp_target":
+		return &f.RampTarget
+	case "cleaning_ordered":
+		return &f.CleaningOrdered
+	case "cleaning_passed":
+		return &f.CleaningPassed
+	case "cleaning_cost_cents":
+		return &f.CleaningCostCents
+	case "arrivals":
+		return &f.Arrivals
+	case "sent":
+		return &f.Sent
+	case "delivered":
+		return &f.Delivered
+	case "deferred":
+		return &f.Deferred
+	}
+	return nil
+}
+
+func (f *pipelineFigures) set(stage string, v *int64) {
+	if p := f.slot(stage); p != nil {
+		*p = v
+	}
+}
+
+func (f *pipelineFigures) get(stage string) *int64 {
+	if p := f.slot(stage); p != nil {
+		return *p
+	}
+	return nil
 }
 
 type pipelineFunnelStep struct {
@@ -300,7 +423,12 @@ type pipelineDomainISP struct {
 	Contract      *int64   `json:"contract"`
 	FirstMailed   *int64   `json:"first_mailed"`
 	Target        *int64   `json:"target"`
+	RampTarget    *int64   `json:"ramp_target"`
 	PctOfContract *float64 `json:"pct_of_contract"`
+	// introduced > contract × (1 + pipelineContractTolerance)
+	OverContract bool `json:"over_contract"`
+	// contract above today's ramp level (cold sent past the 20% ladder)
+	OffRamp bool `json:"off_ramp"`
 }
 
 type pipelineDomain struct {
@@ -308,41 +436,85 @@ type pipelineDomain struct {
 	Contract      *int64              `json:"contract"`
 	FirstMailed   *int64              `json:"first_mailed"`
 	Target        *int64              `json:"target"`
+	RampTarget    *int64              `json:"ramp_target"`
 	PctOfContract *float64            `json:"pct_of_contract"`
+	OverContract  bool                `json:"over_contract"`
+	OffRamp       bool                `json:"off_ramp"`
 	ByISP         []pipelineDomainISP `json:"by_isp"`
 }
 
 type pipelineSourceISP struct {
-	ISP   string `json:"isp"`
-	Raw   *int64 `json:"raw"`
-	Clean *int64 `json:"clean"`
+	ISP               string `json:"isp"`
+	Raw               *int64 `json:"raw"`
+	Clean             *int64 `json:"clean"`
+	DirtyOutsideQueue *int64 `json:"dirty_outside_queue"`
 }
 
 type pipelineSource struct {
-	Source string              `json:"source"`
-	Raw    *int64              `json:"raw"`
-	Clean  *int64              `json:"clean"`
-	ByISP  []pipelineSourceISP `json:"by_isp"`
+	Source            string              `json:"source"`
+	Raw               *int64              `json:"raw"`
+	Clean             *int64              `json:"clean"`
+	DirtyOutsideQueue *int64              `json:"dirty_outside_queue"`
+	ByISP             []pipelineSourceISP `json:"by_isp"`
+}
+
+// pipelineCohort: one introduction-day cohort for one ISP.
+type pipelineCohort struct {
+	Day       string   `json:"day"`
+	ISP       string   `json:"isp"`
+	Mailed    *int64   `json:"mailed"`
+	Activated *int64   `json:"activated"`
+	Rate      *float64 `json:"rate"`
+}
+
+// pipelineCleaningNight: one night's Email Oversight order for one ISP.
+type pipelineCleaningNight struct {
+	Day       string   `json:"day"`
+	ISP       string   `json:"isp"`
+	Ordered   *int64   `json:"ordered"`
+	Passed    *int64   `json:"passed"`
+	PassRate  *float64 `json:"pass_rate"`
+	CostCents *int64   `json:"cost_cents"`
+}
+
+type pipelineCleaningMTDISP struct {
+	ISP       string `json:"isp"`
+	Ordered   *int64 `json:"ordered"`
+	Passed    *int64 `json:"passed"`
+	CostCents *int64 `json:"cost_cents"`
+}
+
+// pipelineCleaningMTD: the Denver month of latest_day, from its 1st.
+type pipelineCleaningMTD struct {
+	Month     string                   `json:"month"`
+	From      string                   `json:"from"`
+	Ordered   *int64                   `json:"ordered"`
+	Passed    *int64                   `json:"passed"`
+	CostCents *int64                   `json:"cost_cents"`
+	ByISP     []pipelineCleaningMTDISP `json:"by_isp"`
 }
 
 type pipelineSummaryResponse struct {
 	diMeta
-	Lane        string                `json:"lane"`
-	Days        int                   `json:"days"`
-	From        string                `json:"from"`
-	To          string                `json:"to"`
-	DenverDay   string                `json:"denver_day"`
-	LatestDay   *string               `json:"latest_day"`
-	LowDays     float64               `json:"low_days_threshold"`
-	RowCount    int                   `json:"row_count"`
-	ISPs        []pipelineISP         `json:"isps"`
-	Totals      pipelineFigures       `json:"totals"`
-	TotalsAvg7d map[string]*float64   `json:"totals_avg_7d"`
-	Funnel      []pipelineFunnelStep  `json:"funnel"`
-	Series      []pipelineSeriesPoint `json:"series"`
-	Domains     []pipelineDomain      `json:"domains"`
-	Sources     []pipelineSource      `json:"sources"`
-	Degraded    []string              `json:"degraded"`
+	Lane        string                  `json:"lane"`
+	Days        int                     `json:"days"`
+	From        string                  `json:"from"`
+	To          string                  `json:"to"`
+	DenverDay   string                  `json:"denver_day"`
+	LatestDay   *string                 `json:"latest_day"`
+	LowDays     float64                 `json:"low_days_threshold"`
+	RowCount    int                     `json:"row_count"`
+	ISPs        []pipelineISP           `json:"isps"`
+	Totals      pipelineFigures         `json:"totals"`
+	TotalsAvg7d map[string]*float64     `json:"totals_avg_7d"`
+	Funnel      []pipelineFunnelStep    `json:"funnel"`
+	Series      []pipelineSeriesPoint   `json:"series"`
+	Domains     []pipelineDomain        `json:"domains"`
+	Sources     []pipelineSource        `json:"sources"`
+	Activation  []pipelineCohort        `json:"activation"`
+	Cleaning    []pipelineCleaningNight `json:"cleaning"`
+	CleaningMTD pipelineCleaningMTD     `json:"cleaning_mtd"`
+	Degraded    []string                `json:"degraded"`
 }
 
 const dataPipelineSummarySQL = `
@@ -398,41 +570,15 @@ func ratio(num, den *int64, scale float64) *float64 {
 	return ptrF64(float64(*num) / float64(*den) * scale)
 }
 
-// derive fills the computed fields from the counted ones.
+// derive fills the latest-day computed fields from the counted ones.
 func (f *pipelineFigures) derive(lowDays float64) {
 	f.DaysOfSupply = ratio(f.Clean, f.Contract, 1)
 	f.PctOfTarget = ratio(f.FirstMailed, f.Target, 100)
 	f.NewShare = ratio(f.FirstMailed, f.UniqueMailed, 100)
 	f.Low = f.DaysOfSupply != nil && *f.DaysOfSupply < lowDays
-}
-
-func (f *pipelineFigures) set(stage string, v *int64) {
-	switch stage {
-	case "received":
-		f.Received = v
-	case "raw":
-		f.Raw = v
-	case "cleaned_ok":
-		f.CleanedOK = v
-	case "cleaned_rejected":
-		f.CleanedRejected = v
-	case "clean":
-		f.Clean = v
-	case "unique_mailed":
-		f.UniqueMailed = v
-	case "target":
-		f.Target = v
-	case "contract":
-		f.Contract = v
-	case "first_mailed":
-		f.FirstMailed = v
-	case "in_funnel":
-		f.InFunnel = v
-	case "promoted":
-		f.Promoted = v
-	case "retired":
-		f.Retired = v
-	}
+	f.CleaningPassRate = ratio(f.CleaningPassed, f.CleaningOrdered, 100)
+	f.DeliveredRate = ratio(f.Delivered, f.Sent, 100)
+	f.DeferredRate = ratio(f.Deferred, f.Sent, 100)
 }
 
 func addOpt(dst **int64, v *int64) {
@@ -451,6 +597,14 @@ func dayShift(day string, n int) string {
 		return day
 	}
 	return t.AddDate(0, 0, n).Format(dataingest.DayLayout)
+}
+
+// monthStart returns the 1st of day's month ("2026-11-01").
+func monthStart(day string) string {
+	if len(day) >= 8 {
+		return day[:8] + "01"
+	}
+	return day
 }
 
 // HandleSummary — GET /summary?lane=ses&days=14[&low_days=3]
@@ -489,15 +643,20 @@ func (s *DataPipelineService) HandleSummary(w http.ResponseWriter, r *http.Reque
 
 	today := dataingest.DayOf(s.now())
 	from := dayShift(today, -(days - 1))
+	// The read also reaches back to the 1st of the month so the Email
+	// Oversight month-to-date is complete; everything else is cut to `from`.
+	readFrom := from
+	if ms := monthStart(today); ms < readFrom {
+		readFrom = ms
+	}
 	out := pipelineSummaryResponse{
 		diMeta: s.meta(r), Lane: lane, Days: days, From: from, To: today,
 		DenverDay: today, LowDays: lowDays, Degraded: []string{},
-		Series: []pipelineSeriesPoint{}, Domains: []pipelineDomain{}, Sources: []pipelineSource{},
 	}
 
 	qctx, cancel := context.WithTimeout(r.Context(), pipelineQueryTimeout)
 	defer cancel()
-	rows, err := s.db.QueryContext(qctx, dataPipelineSummarySQL, out.OrgID, lane, from, today)
+	rows, err := s.db.QueryContext(qctx, dataPipelineSummarySQL, out.OrgID, lane, readFrom, today)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "pipeline_query_failed: "+err.Error())
 		return
@@ -518,17 +677,33 @@ func (s *DataPipelineService) HandleSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rows.Close()
-	out.RowCount = len(dbRows)
 	buildPipelineSummary(&out, dbRows)
 	respondJSON(w, http.StatusOK, out)
 }
 
+// pipelineDegradeStages: the stages whose LANE total is shown; a partial
+// total for one of these is named in degraded[].
+var pipelineDegradeStages = []string{
+	"received", "cleaned_ok", "clean", "first_mailed", "promoted",
+	"raw", "contract", "target", "dirty_outside_queue", "arrivals",
+}
+
 // buildPipelineSummary is the pure aggregation (tested without a DB).
-func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) {
-	// (day, isp, stage) → reading-rule accumulator.
+func buildPipelineSummary(out *pipelineSummaryResponse, all []pipelineDBRow) {
+	out.Series = []pipelineSeriesPoint{}
+	out.Domains = []pipelineDomain{}
+	out.Sources = []pipelineSource{}
+	out.Activation = []pipelineCohort{}
+	out.Cleaning = []pipelineCleaningNight{}
+	out.CleaningMTD = pipelineCleaningMTD{ByISP: []pipelineCleaningMTDISP{}}
+
+	// (day, isp, stage) → reading-rule accumulator, over the whole read
+	// (window + month-to-date reach-back).
 	acc := map[string]map[string]map[string]*stageAcc{}
 	latest := ""
-	for _, x := range dbRows {
+	seenStage := map[string]bool{}
+	var dbRows []pipelineDBRow // the requested window only
+	for _, x := range all {
 		if acc[x.day] == nil {
 			acc[x.day] = map[string]map[string]*stageAcc{}
 		}
@@ -541,17 +716,23 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 			acc[x.day][x.isp][x.stage] = a
 		}
 		a.add(x.source, x.domain, x.n)
-		if x.day > latest {
-			latest = x.day
+		if x.day >= out.From {
+			dbRows = append(dbRows, x)
+			seenStage[x.stage] = true
+			if x.day > latest {
+				latest = x.day
+			}
 		}
 	}
+	out.RowCount = len(dbRows)
 	val := func(day, isp, stage string) *int64 {
 		if a := acc[day][isp][stage]; a != nil {
 			return ptrI64(a.value())
 		}
 		return nil
 	}
-	// Lane total for one day/stage: non-windstream ISPs that reported.
+	// Lane total for one day/stage: top-level ISPs that reported (sub-rows are
+	// already inside their parent).
 	laneTotal := func(day, stage string) *int64 {
 		var t *int64
 		for _, isp := range pipelineISPs {
@@ -565,7 +746,9 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 
 	sortedDays := make([]string, 0, len(acc))
 	for d := range acc {
-		sortedDays = append(sortedDays, d)
+		if d >= out.From {
+			sortedDays = append(sortedDays, d)
+		}
 	}
 	sort.Strings(sortedDays)
 	for _, d := range sortedDays {
@@ -578,6 +761,18 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 				p.Stages[stage] = a.value()
 			}
 			out.Series = append(out.Series, p)
+			mailed, activated := val(d, isp, "cohort_mailed"), val(d, isp, "cohort_activated")
+			if mailed != nil || activated != nil {
+				out.Activation = append(out.Activation, pipelineCohort{
+					Day: d, ISP: isp, Mailed: mailed, Activated: activated, Rate: ratio(activated, mailed, 100),
+				})
+			}
+			ord, pass, cost := val(d, isp, "cleaning_ordered"), val(d, isp, "cleaning_passed"), val(d, isp, "cleaning_cost_cents")
+			if ord != nil || pass != nil || cost != nil {
+				out.Cleaning = append(out.Cleaning, pipelineCleaningNight{
+					Day: d, ISP: isp, Ordered: ord, Passed: pass, PassRate: ratio(pass, ord, 100), CostCents: cost,
+				})
+			}
 		}
 	}
 
@@ -600,10 +795,30 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 		}
 		return ptrF64(sum / float64(n))
 	}
+	// Σactivated ÷ Σmailed over cohort days in the last 7 with both counts.
+	activation7d := func(get func(day, stage string) *int64) *float64 {
+		if latest == "" {
+			return nil
+		}
+		var m, a int64
+		seen := false
+		for i := 0; i < pipelineAvgWindow; i++ {
+			d := dayShift(latest, -i)
+			mv, av := get(d, "cohort_mailed"), get(d, "cohort_activated")
+			if mv != nil && av != nil {
+				m, a, seen = m+*mv, a+*av, true
+			}
+		}
+		if !seen {
+			return nil
+		}
+		return ratio(&a, &m, 100)
+	}
 
-	allFields := append(append([]string{}, pipelineStages...), "days_of_supply", "pct_of_target", "new_share", "low", "avg_7d")
+	derivedFields := []string{"days_of_supply", "pct_of_target", "new_share", "low", "avg_7d",
+		"activation_rate_7d", "cleaning_pass_rate", "delivered_rate", "deferred_rate"}
 	if latest == "" {
-		out.markAll(fieldNotMeasured, allFields...)
+		out.markAll(fieldNotMeasured, append(append([]string{}, pipelineStages...), derivedFields...)...)
 		out.ISPs = make([]pipelineISP, 0, len(pipelineISPs))
 		for _, isp := range pipelineISPs {
 			out.ISPs = append(out.ISPs, pipelineISP{ISP: isp, Parent: pipelineISPParent[isp], Avg7d: map[string]*float64{}})
@@ -619,12 +834,14 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 
 	for _, isp := range pipelineISPs {
 		row := pipelineISP{ISP: isp, Parent: pipelineISPParent[isp], Avg7d: map[string]*float64{}}
+		ispName := isp
 		for _, st := range pipelineStages {
 			row.set(st, val(latest, isp, st))
 			stage := st
-			row.Avg7d[st] = avg(func(day string) *int64 { return val(day, isp, stage) })
+			row.Avg7d[st] = avg(func(day string) *int64 { return val(day, ispName, stage) })
 		}
 		row.derive(out.LowDays)
+		row.ActivationRate7d = activation7d(func(day, stage string) *int64 { return val(day, ispName, stage) })
 		out.ISPs = append(out.ISPs, row)
 	}
 
@@ -633,6 +850,10 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 		out.Totals.set(st, laneTotal(latest, st))
 		stage := st
 		out.TotalsAvg7d[st] = avg(func(day string) *int64 { return laneTotal(day, stage) })
+	}
+	out.Totals.derive(out.LowDays)
+	out.Totals.ActivationRate7d = activation7d(laneTotal)
+	for _, st := range pipelineDegradeStages {
 		// A partial total names who is missing rather than reading as complete.
 		var have, missing []string
 		for _, isp := range pipelineISPs {
@@ -650,7 +871,6 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 				st, latest, strings.Join(missing, ", "), len(have), len(have)+len(missing)))
 		}
 	}
-	out.Totals.derive(out.LowDays)
 
 	var prior *int64
 	for i, st := range pipelineFunnel {
@@ -664,7 +884,7 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 	}
 
 	// Per sending domain (latest day): rows that carry a domain, summed across
-	// sources; the domain total skips windstream.
+	// sources; the domain total skips sub-rows.
 	domAcc := map[string]map[string]map[string]int64{} // domain → isp → stage → n
 	srcAcc := map[string]map[string]map[string]int64{} // source → isp → stage → n
 	for _, x := range dbRows {
@@ -679,7 +899,7 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 				domAcc[x.domain][x.isp] = map[string]int64{}
 			}
 			domAcc[x.domain][x.isp][x.stage] += x.n
-		} else if x.source != "" && (x.stage == "raw" || x.stage == "clean") {
+		} else if x.source != "" && (x.stage == "raw" || x.stage == "clean" || x.stage == "dirty_outside_queue") {
 			if srcAcc[x.source] == nil {
 				srcAcc[x.source] = map[string]map[string]int64{}
 			}
@@ -695,6 +915,12 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 		}
 		return nil
 	}
+	overContract := func(intro, contract *int64) bool {
+		return intro != nil && contract != nil && float64(*intro) > float64(*contract)*(1+pipelineContractTolerance)
+	}
+	offRamp := func(contract, ramp *int64) bool {
+		return contract != nil && ramp != nil && *contract > *ramp
+	}
 	domNames := make([]string, 0, len(domAcc))
 	for d := range domAcc {
 		domNames = append(domNames, d)
@@ -707,16 +933,26 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 			if !ok {
 				continue
 			}
-			di := pipelineDomainISP{ISP: isp, Contract: get(m, "contract"), FirstMailed: get(m, "first_mailed"), Target: get(m, "target")}
+			di := pipelineDomainISP{ISP: isp, Contract: get(m, "contract"), FirstMailed: get(m, "first_mailed"),
+				Target: get(m, "target"), RampTarget: get(m, "ramp_target")}
 			di.PctOfContract = ratio(di.FirstMailed, di.Contract, 100)
+			di.OverContract = overContract(di.FirstMailed, di.Contract)
+			di.OffRamp = offRamp(di.Contract, di.RampTarget)
 			dom.ByISP = append(dom.ByISP, di)
 			if pipelineISPParent[isp] == "" {
 				addOpt(&dom.Contract, di.Contract)
 				addOpt(&dom.FirstMailed, di.FirstMailed)
 				addOpt(&dom.Target, di.Target)
+				addOpt(&dom.RampTarget, di.RampTarget)
+				dom.OverContract = dom.OverContract || di.OverContract
+				dom.OffRamp = dom.OffRamp || di.OffRamp
+			} else {
+				dom.OverContract = dom.OverContract || di.OverContract
+				dom.OffRamp = dom.OffRamp || di.OffRamp
 			}
 		}
 		dom.PctOfContract = ratio(dom.FirstMailed, dom.Contract, 100)
+		dom.OverContract = dom.OverContract || overContract(dom.FirstMailed, dom.Contract)
 		out.Domains = append(out.Domains, dom)
 	}
 	srcNames := make([]string, 0, len(srcAcc))
@@ -731,58 +967,50 @@ func buildPipelineSummary(out *pipelineSummaryResponse, dbRows []pipelineDBRow) 
 			if !ok {
 				continue
 			}
-			si := pipelineSourceISP{ISP: isp, Raw: get(m, "raw"), Clean: get(m, "clean")}
+			si := pipelineSourceISP{ISP: isp, Raw: get(m, "raw"), Clean: get(m, "clean"), DirtyOutsideQueue: get(m, "dirty_outside_queue")}
 			so.ByISP = append(so.ByISP, si)
 			if pipelineISPParent[isp] == "" {
 				addOpt(&so.Raw, si.Raw)
 				addOpt(&so.Clean, si.Clean)
+				addOpt(&so.DirtyOutsideQueue, si.DirtyOutsideQueue)
 			}
 		}
 		out.Sources = append(out.Sources, so)
 	}
 
+	// Email Oversight month-to-date: the month of latest_day, from its 1st,
+	// over the full read (which reaches back to the 1st).
+	ms := monthStart(latest)
+	out.CleaningMTD.Month, out.CleaningMTD.From = latest[:7], ms
+	for _, isp := range pipelineISPs {
+		row := pipelineCleaningMTDISP{ISP: isp}
+		for d := range acc {
+			if d < ms || d > latest {
+				continue
+			}
+			addOpt(&row.Ordered, val(d, isp, "cleaning_ordered"))
+			addOpt(&row.Passed, val(d, isp, "cleaning_passed"))
+			addOpt(&row.CostCents, val(d, isp, "cleaning_cost_cents"))
+		}
+		if row.Ordered == nil && row.Passed == nil && row.CostCents == nil {
+			continue
+		}
+		out.CleaningMTD.ByISP = append(out.CleaningMTD.ByISP, row)
+		if pipelineISPParent[isp] == "" {
+			addOpt(&out.CleaningMTD.Ordered, row.Ordered)
+			addOpt(&out.CleaningMTD.Passed, row.Passed)
+			addOpt(&out.CleaningMTD.CostCents, row.CostCents)
+		}
+	}
+
+	// A stage is measured when any row for it is in the window (a null value
+	// still renders "not reported yet" on its own).
 	for _, st := range pipelineStages {
-		if out.Totals.get(st) != nil {
+		if seenStage[st] {
 			out.mark(st, fieldMeasured)
 		} else {
 			out.mark(st, fieldNotMeasured)
 		}
 	}
-	out.markAll(fieldDerived, "days_of_supply", "pct_of_target", "new_share", "low", "avg_7d")
-	// windstream-only stages still count as measured for the windstream row.
-	for _, st := range pipelineStages {
-		if out.Fields[st] == fieldNotMeasured && acc[latest]["windstream"][st] != nil {
-			out.mark(st, fieldMeasured)
-		}
-	}
-}
-
-func (f *pipelineFigures) get(stage string) *int64 {
-	switch stage {
-	case "received":
-		return f.Received
-	case "raw":
-		return f.Raw
-	case "cleaned_ok":
-		return f.CleanedOK
-	case "cleaned_rejected":
-		return f.CleanedRejected
-	case "clean":
-		return f.Clean
-	case "unique_mailed":
-		return f.UniqueMailed
-	case "target":
-		return f.Target
-	case "contract":
-		return f.Contract
-	case "first_mailed":
-		return f.FirstMailed
-	case "in_funnel":
-		return f.InFunnel
-	case "promoted":
-		return f.Promoted
-	case "retired":
-		return f.Retired
-	}
-	return nil
+	out.markAll(fieldDerived, derivedFields...)
 }

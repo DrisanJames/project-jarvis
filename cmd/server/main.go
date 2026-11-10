@@ -13213,6 +13213,22 @@ END $$`},
 			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (org_id, day, lane, isp, stage, source, sending_domain)
 		)`},
+		// data_pipeline_agent_log: the pipeline agent's append-only log
+		// (POST/GET /api/mailing/data-pipeline/agent,
+		// internal/api/data_pipeline_agent.go). kind = check|decision|repair|
+		// learned|alert|report, status = ok|warn|fail (validated in Go). The
+		// index is built on an empty table here, so it fits the 5s budget.
+		{"dp_create_data_pipeline_agent_log", `CREATE TABLE IF NOT EXISTS data_pipeline_agent_log (
+			id     BIGSERIAL PRIMARY KEY,
+			org_id UUID NOT NULL,
+			at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			kind   TEXT NOT NULL,
+			status TEXT NOT NULL,
+			isp    TEXT NOT NULL DEFAULT '',
+			title  TEXT NOT NULL,
+			body   JSONB NOT NULL DEFAULT '{}'::jsonb
+		)`},
+		{"dp_idx_data_pipeline_agent_log_org_at", `CREATE INDEX IF NOT EXISTS idx_dp_agent_log_org_at ON data_pipeline_agent_log (org_id, at DESC)`},
 		// LAST on purpose — see nxWaveIPRepointSQL.
 		{"nx_wave_ip_repoint_20260918_final_pass", nxWaveIPRepointSQL},
 	}...)

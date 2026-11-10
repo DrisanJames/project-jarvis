@@ -10,11 +10,18 @@ import type { Count, FieldFlags } from '../dataingest/api';
 
 export const DATA_PIPELINE_BASE = '/api/mailing/data-pipeline';
 
-export type PipelineISPId = 'microsoft' | 'apple' | 'comcast' | 'yahoo_family' | 'longtail' | 'windstream';
+export type PipelineISPId =
+  | 'microsoft' | 'apple' | 'comcast'
+  | 'yahoo_family' | 'yahoo' | 'aol' | 'att' | 'sbcglobal' | 'cox' | 'verizon' | 'frontier'
+  | 'longtail' | 'windstream';
 
 export type PipelineStage =
   | 'received' | 'raw' | 'cleaned_ok' | 'cleaned_rejected' | 'clean' | 'unique_mailed'
-  | 'target' | 'contract' | 'first_mailed' | 'in_funnel' | 'promoted' | 'retired';
+  | 'target' | 'contract' | 'first_mailed' | 'in_funnel' | 'promoted' | 'retired'
+  | 'dirty_outside_queue' | 'touch_1' | 'touch_2' | 'touch_3' | 'touch_4' | 'touch_5'
+  | 'cohort_mailed' | 'cohort_activated' | 'ramp_target'
+  | 'cleaning_ordered' | 'cleaning_passed' | 'cleaning_cost_cents'
+  | 'arrivals' | 'sent' | 'delivered' | 'deferred';
 
 /** pipelineFigures — one ISP's latest day, or the lane total. */
 export interface PipelineFigures {
@@ -30,6 +37,22 @@ export interface PipelineFigures {
   in_funnel: Count;
   promoted: Count;
   retired: Count;
+  dirty_outside_queue: Count;
+  touch_1: Count;
+  touch_2: Count;
+  touch_3: Count;
+  touch_4: Count;
+  touch_5: Count;
+  cohort_mailed: Count;
+  cohort_activated: Count;
+  ramp_target: Count;
+  cleaning_ordered: Count;
+  cleaning_passed: Count;
+  cleaning_cost_cents: Count;
+  arrivals: Count;
+  sent: Count;
+  delivered: Count;
+  deferred: Count;
   /** clean ÷ contract; null when contract is 0 or unknown */
   days_of_supply: number | null;
   /** first_mailed ÷ target × 100 */
@@ -38,6 +61,11 @@ export interface PipelineFigures {
   new_share: number | null;
   /** days_of_supply below low_days_threshold (server verdict) */
   low: boolean;
+  /** Σ activated ÷ Σ mailed × 100 over the cohort days of the last 7 */
+  activation_rate_7d: number | null;
+  cleaning_pass_rate: number | null;
+  delivered_rate: number | null;
+  deferred_rate: number | null;
 }
 
 /** pipelineISP */
@@ -61,7 +89,10 @@ export interface PipelineDomainISP {
   contract: Count;
   first_mailed: Count;
   target: Count;
+  ramp_target: Count;
   pct_of_contract: number | null;
+  over_contract: boolean;
+  off_ramp: boolean;
 }
 
 export interface PipelineDomain {
@@ -69,7 +100,10 @@ export interface PipelineDomain {
   contract: Count;
   first_mailed: Count;
   target: Count;
+  ramp_target: Count;
   pct_of_contract: number | null;
+  over_contract: boolean;
+  off_ramp: boolean;
   by_isp: PipelineDomainISP[];
 }
 
@@ -77,12 +111,14 @@ export interface PipelineSourceISP {
   isp: PipelineISPId;
   raw: Count;
   clean: Count;
+  dirty_outside_queue: Count;
 }
 
 export interface PipelineSource {
   source: string;
   raw: Count;
   clean: Count;
+  dirty_outside_queue: Count;
   by_isp: PipelineSourceISP[];
 }
 
@@ -106,14 +142,49 @@ export interface PipelineSummary {
   series: { day: string; isp: PipelineISPId; stages: Partial<Record<PipelineStage, number>> }[];
   domains: PipelineDomain[];
   sources: PipelineSource[];
+  activation: { day: string; isp: PipelineISPId; mailed: Count; activated: Count; rate: number | null }[];
+  cleaning: { day: string; isp: PipelineISPId; ordered: Count; passed: Count; pass_rate: number | null; cost_cents: Count }[];
+  cleaning_mtd: {
+    month: string;
+    from: string;
+    ordered: Count;
+    passed: Count;
+    cost_cents: Count;
+    by_isp: { isp: PipelineISPId; ordered: Count; passed: Count; cost_cents: Count }[];
+  };
   degraded: string[];
 }
 
-export async function fetchPipelineSummary(lane: string, days: number, signal?: AbortSignal): Promise<PipelineSummary> {
-  const r = await apiFetch(
-    `${DATA_PIPELINE_BASE}/summary?lane=${encodeURIComponent(lane)}&days=${encodeURIComponent(String(days))}`,
-    { signal },
-  );
+/** pipelineAgentEntry (data_pipeline_agent.go) */
+export interface PipelineAgentEntry {
+  id?: number;
+  at: string;
+  kind: 'check' | 'decision' | 'repair' | 'learned' | 'alert' | 'report';
+  status: 'ok' | 'warn' | 'fail';
+  isp: string;
+  title: string;
+  body: Record<string, unknown>;
+}
+
+/** pipelineAgentResponse */
+export interface PipelineAgentLog {
+  as_of: string;
+  source: string;
+  fields: FieldFlags;
+  header: {
+    last_check_at: string | null;
+    status: 'ok' | 'warn' | 'fail' | null;
+    minutes_since_last_check: number | null;
+    stale: boolean;
+    stale_after_minutes: number;
+    mandate: Record<string, unknown> | null;
+    mandate_at: string | null;
+  };
+  entries: PipelineAgentEntry[];
+}
+
+async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(`${DATA_PIPELINE_BASE}${path}`, { signal });
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try {
@@ -122,14 +193,27 @@ export async function fetchPipelineSummary(lane: string, days: number, signal?: 
     } catch { /* non-JSON error body */ }
     throw new Error(msg);
   }
-  return (await r.json()) as PipelineSummary;
+  return (await r.json()) as T;
 }
+
+export const fetchPipelineSummary = (lane: string, days: number, signal?: AbortSignal) =>
+  getJSON<PipelineSummary>(`/summary?lane=${encodeURIComponent(lane)}&days=${encodeURIComponent(String(days))}`, signal);
+
+export const fetchPipelineAgent = (limit: number, signal?: AbortSignal) =>
+  getJSON<PipelineAgentLog>(`/agent?limit=${encodeURIComponent(String(limit))}`, signal);
 
 export const ISP_LABEL: Record<PipelineISPId, string> = {
   microsoft: 'Microsoft',
   apple: 'Apple',
   comcast: 'Comcast',
   yahoo_family: 'Yahoo family',
+  yahoo: 'Yahoo',
+  aol: 'AOL',
+  att: 'AT&T',
+  sbcglobal: 'SBCGlobal',
+  cox: 'Cox',
+  verizon: 'Verizon',
+  frontier: 'Frontier',
   longtail: 'Long tail',
   windstream: 'Windstream (part of long tail)',
 };
@@ -139,6 +223,10 @@ export const ispLabel = (isp: string): string => ISP_LABEL[isp as PipelineISPId]
 export const SOURCE_LABEL: Record<string, string> = {
   partner: 'Partner',
   vertical: 'Vertical',
+  s3: 'Amazon S3 storage',
+  sftp: 'SFTP drop',
+  local: 'Local files',
+  subscriber_base: 'Existing subscriber base',
 };
 
 export const sourceLabel = (s: string): string =>
