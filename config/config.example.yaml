@@ -144,7 +144,7 @@ data_pipeline:
   run_hour_utc: 7
   eo_api_token: "1e7d6d8e-31e6-4351-8c99-4f76d9bf89d3"
   eo_list_id: 256091
-  eo_concurrency: 20
+  eo_concurrency: 5
   admin_email: "drisanjames@gmail.com"
   min_deficit_threshold: 50
 
