@@ -52,6 +52,7 @@ var pmtaTransientPatterns = []string{
 	"http 504",
 	"service unavailable",
 	"421",
+	"vmta pool not loaded", // esp_pmta.go errVMTAPoolNotLoaded — no pool read has completed yet
 }
 
 // PMTATransientBackoffMinutes is the cooldown applied to a recipient that

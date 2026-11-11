@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -145,6 +146,8 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 			// a terminal send error and the journey retry classifier treats as
 			// grounds to EJECT the enrollment.
 			return nil, fmt.Errorf("deferred_strict_pool: %w", err)
+		} else if errors.Is(err, errVMTAPoolNotLoaded) {
+			return nil, fmt.Errorf("profile %s: %w", msg.ProfileID, err)
 		} else {
 			// vmtaPool.next only fails on membership now (see its doc comment):
 			// an empty pool. It never refuses on volume.

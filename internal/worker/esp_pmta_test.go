@@ -74,6 +74,7 @@ func buildTestPool(groups map[string][]vmtaEntry, flatIPs []vmtaEntry, prefix st
 		ispGroups:  groups,
 		ispIdx:     idxMap,
 		poolPrefix: prefix,
+		loadedAt:   time.Now(), // a built pool models a completed read
 	}
 }
 

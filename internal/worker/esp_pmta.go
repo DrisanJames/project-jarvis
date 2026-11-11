@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"mime/quotedprintable"
@@ -161,10 +162,12 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 
 	var allIPs []vmtaEntry
 	groups := make(map[string][]vmtaEntry)
+	scanErrs := 0
 	for rows.Next() {
 		var e vmtaEntry
 		var poolName string
 		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent, &poolName, &e.IP); err != nil {
+			scanErrs++
 			continue
 		}
 		e.PoolName = poolName
@@ -173,6 +176,16 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		if suffix != "" {
 			groups[suffix] = append(groups[suffix], e)
 		}
+	}
+
+	// A read cut short (statement timeout, cancelled context, dropped connection — every deploy's boot under DB
+	// contention) is NOT an empty pool: caching it as one failed every send on the profile with "no sending IPs
+	// configured" for the TTL (2026-11-10/11: 140, 167, 211 and 589 terminal failures across four deploys). Keep the
+	// previous IP set and leave loadedAt alone so the next Send retries the read.
+	if rErr := rows.Err(); rErr != nil || (len(allIPs) == 0 && scanErrs > 0) {
+		log.Printf("[vmtaPool] refresh aborted for profile %s (prefix=%s): rows.Err=%v scanErrs=%d — not cached, keeping %d IPs",
+			profileID, p.poolPrefix, rErr, scanErrs, len(p.ips))
+		return
 	}
 
 	// Load strict isolation preferences
@@ -267,6 +280,10 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 	defer p.mu.RUnlock()
 
 	if len(p.ips) == 0 {
+		if p.loadedAt.IsZero() {
+			// No read has completed yet (boot under DB contention): unknown, not empty.
+			return vmtaEntry{}, fmt.Errorf("%w (poolPrefix=%s)", errVMTAPoolNotLoaded, p.poolPrefix)
+		}
 		return vmtaEntry{}, fmt.Errorf("no IPs in pool (poolPrefix=%s)", p.poolPrefix)
 	}
 
@@ -480,6 +497,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 			// Membership failures only — next() never refuses on volume.
 			if strings.Contains(vmtaErr.Error(), "strict_pool_exhausted") {
 				return nil, fmt.Errorf("deferred_strict_pool: %w", vmtaErr)
+			}
+			if errors.Is(vmtaErr, errVMTAPoolNotLoaded) {
+				return nil, fmt.Errorf("profile %s: %w", msg.ProfileID, vmtaErr)
 			}
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}
@@ -720,3 +740,8 @@ func vmtaShortName(hostname string) string {
 	}
 	return hostname
 }
+
+// errVMTAPoolNotLoaded: the pool has never completed a read. Senders surface it as a
+// transient ("vmta pool not loaded" ∈ pmtaTransientPatterns) so markFailed requeues the
+// recipient instead of failing it as "no sending IPs configured".
+var errVMTAPoolNotLoaded = errors.New("vmta pool not loaded")
