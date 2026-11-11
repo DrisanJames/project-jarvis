@@ -2558,7 +2558,13 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 			poolArg = ipPool.String
 		}
 
-		rows, qErr := db.QueryContext(ctx, poolQuery, poolArg)
+		// readPreflightPool surfaces a Scan / rows.Err() failure instead of letting an aborted read
+		// look like an empty pool, and retries the read once (2026-11-10 21:14Z: the 11-11 rrgo Apple
+		// cell was refused "ip_pool_empty" while the pool's one IP was active and sending).
+		ips, qErr := readPreflightPool(ctx, db, poolQuery, poolArg)
+		if qErr != nil && ctx.Err() == nil {
+			ips, qErr = readPreflightPool(ctx, db, poolQuery, poolArg)
+		}
 		if qErr != nil {
 			res.OK = false
 			res.Errors = append(res.Errors, preflightError{
@@ -2567,23 +2573,19 @@ func preflightDeployCheck(ctx context.Context, db *sql.DB, orgID string, sending
 			})
 			return res
 		}
-		defer rows.Close()
 
-		activeIPs := 0
+		activeIPs := len(ips)
 		ispPoolsWithIPs := make(map[string]bool)
-		for rows.Next() {
-			var hostname, status, poolName string
-			rows.Scan(&hostname, &status, &poolName)
-			activeIPs++
-			ispPoolsWithIPs[poolName] = true
-			vmta := hostname
+		for _, ip := range ips {
+			ispPoolsWithIPs[ip.pool] = true
+			vmta := ip.hostname
 			if dotIdx := strings.Index(vmta, "."); dotIdx > 0 {
 				vmta = vmta[:dotIdx]
 			}
 			if len(vmta) < 2 || strings.Contains(vmta, ".") {
 				res.Warnings = append(res.Warnings, preflightError{
 					Check:   "vmta_name",
-					Message: fmt.Sprintf("IP hostname %q produces suspicious VMTA name %q", hostname, vmta),
+					Message: fmt.Sprintf("IP hostname %q produces suspicious VMTA name %q", ip.hostname, vmta),
 				})
 			}
 		}
@@ -2802,4 +2804,30 @@ func deriveSendingDomainVariants(domain string) []string {
 		variants = append(variants, p+baseDomain)
 	}
 	return variants
+}
+
+type preflightPoolIP struct{ hostname, status, pool string }
+
+// readPreflightPool runs the preflight IP-pool query and returns every row, or the error that ended the read
+// early (Scan failure, statement timeout, cancelled context) — never a short list that reads as an empty pool.
+func readPreflightPool(ctx context.Context, db *sql.DB, query string, arg interface{}) ([]preflightPoolIP, error) {
+	rows, err := db.QueryContext(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []preflightPoolIP
+	for rows.Next() {
+		var ip preflightPoolIP
+		var hostname sql.NullString
+		if err := rows.Scan(&hostname, &ip.status, &ip.pool); err != nil {
+			return nil, err
+		}
+		ip.hostname = hostname.String
+		out = append(out, ip)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
