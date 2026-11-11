@@ -3832,6 +3832,45 @@ var contractFulfillmentMigrations = []struct {
 	)`},
 }
 
+// nxPoolKeepTriggerSQL closes the boot window the final pass below only repairs.
+// Between the in-place repoint and the final pass, 15 legacy migrations (the
+// /25 generator phase6_seed_all_ips, the may08/may09 reassigns, phase12/14/19,
+// aug26 …) move nx addresses back to '<brand>-<isp>-pool'. The send workers are
+// already running, so every nx profile's vmtaPool read an EMPTY pool for that
+// window, cached it, and failed its sends terminally with "no sending IPs
+// configured" (571 at 02:49Z + 75 at 02:50Z on the :1247 boot, 12 nx profiles).
+// While the startup-migration session is running (GUC jarvis.startup_migration=on,
+// set by runStartupMigrations' execSQL), an UPDATE may not move an address OUT of
+// an nx '<token>-general-pool' (regex == exactly the 223 repoint targets,
+// verified 2026-11-11) into a non-nx pool. Any other session — admin handlers,
+// pool isolation, agents — is untouched. BEFORE UPDATE OF pool_id: the per-send
+// last_sent_at UPDATE never fires it.
+const nxPoolKeepFnSQL = `
+CREATE OR REPLACE FUNCTION mailing_ip_keep_nx_pool() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF current_setting('jarvis.startup_migration', true) = 'on'
+       AND OLD.pool_id IS NOT NULL
+       AND NEW.pool_id IS DISTINCT FROM OLD.pool_id
+       AND EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.id = OLD.pool_id AND p.name ~ '^[a-z]{4,6}-general-pool$')
+       AND NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.id = NEW.pool_id AND p.name ~ '^[a-z]{4,6}-general-pool$')
+    THEN
+        NEW.pool_id := OLD.pool_id;
+    END IF;
+    RETURN NEW;
+END
+$fn$`
+
+const nxPoolKeepTriggerSQL = `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_mailing_ip_keep_nx_pool'
+                   AND tgrelid = 'mailing_ip_addresses'::regclass) THEN
+        CREATE TRIGGER trg_mailing_ip_keep_nx_pool
+            BEFORE UPDATE OF pool_id ON mailing_ip_addresses
+            FOR EACH ROW EXECUTE FUNCTION mailing_ip_keep_nx_pool();
+    END IF;
+END $$`
+
 // nxWaveIPRepointSQL points the nx wave-domain addresses at their
 // '<brand><tok>-general-pool'. It runs TWICE per boot on purpose: once in
 // place (nx_wave_ip_repoint_20260918, after the pools are created) and again
@@ -6182,6 +6221,9 @@ WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p
                   WHERE p.name = v.name AND p.organization_id = v.org::uuid);
 `},
 		{"nx_wave_ip_repoint_20260918", nxWaveIPRepointSQL},
+		// The guard that makes the final pass a no-op instead of a repair: see nxPoolKeepTriggerSQL.
+		{"nx_pool_keep_fn_20261111", nxPoolKeepFnSQL},
+		{"nx_pool_keep_trigger_20261111", nxPoolKeepTriggerSQL},
 
 		// === Kumo property governor (partner-drip per-property volume governor) ===
 		// The 9 Kumo properties subscribe to the 3 Sam's offer-backed verticals and
@@ -13258,12 +13300,29 @@ END $$`},
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, err := db.ExecContext(ctx, sql)
-		return err
+		// Pool fallback: carry the startup-migration marker (nxPoolKeepFnSQL) in a tx —
+		// except statements that cannot run inside one.
+		if u := strings.ToUpper(sql); strings.Contains(u, "CONCURRENTLY") || strings.Contains(u, "VACUUM") {
+			_, err := db.ExecContext(ctx, sql)
+			return err
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, startupMigrationMarkerLocal); err == nil {
+			_, err = tx.ExecContext(ctx, sql)
+		}
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		return tx.Commit()
 	}
 	if conn != nil {
 		defer conn.Close()
 		execSQL("SET statement_timeout = '5s'")
+		execSQL(startupMigrationMarker)
 	}
 
 	var ok, fail, skip, alreadyApplied int
@@ -14649,3 +14708,9 @@ func mailingDBMaxOpenConns() int {
 	}
 	return n
 }
+
+// startupMigrationMarker tags the startup-migration session; mailing_ip_keep_nx_pool reads it.
+const (
+	startupMigrationMarker      = "SET jarvis.startup_migration = 'on'"
+	startupMigrationMarkerLocal = "SET LOCAL jarvis.startup_migration = 'on'"
+)
