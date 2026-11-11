@@ -331,7 +331,11 @@ func main() {
 			log.Println("Redis not configured (REDIS_URL not set) — using PG advisory locks for distributed locking")
 		}
 
-		mailingDB.SetMaxOpenConns(40)
+		// DB_MAX_OPEN_CONNS (default 40, clamped 10..150): 2026-11-10 the send workers
+		// sat in database/sql.(*DB).conn waiting for one of 40 connections while RDS ran
+		// 110 of 5,000 connections at 45-60% CPU — the app pool, not the DB, capped sends.
+		mailingDB.SetMaxOpenConns(mailingDBMaxOpenConns())
+		log.Printf("mailing DB pool: max_open=%d (DB_MAX_OPEN_CONNS)", mailingDBMaxOpenConns())
 		mailingDB.SetMaxIdleConns(25)
 		mailingDB.SetConnMaxLifetime(5 * time.Minute)
 		mailingDB.SetConnMaxIdleTime(2 * time.Minute)
@@ -14629,4 +14633,19 @@ func addColumnIfMissing(db *sql.DB, table, column, ddl string) {
 		return
 	}
 	log.Printf("[StartupMigration] %s: OK", name)
+}
+
+// mailingDBMaxOpenConns reads DB_MAX_OPEN_CONNS for the primary mailing pool.
+func mailingDBMaxOpenConns() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DB_MAX_OPEN_CONNS")))
+	if err != nil || n <= 0 {
+		return 40
+	}
+	if n < 10 {
+		return 10
+	}
+	if n > 150 {
+		return 150
+	}
+	return n
 }
