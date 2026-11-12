@@ -12,6 +12,7 @@ import (
 
 	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -327,7 +328,44 @@ func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) 
 		materialized, len(segments), time.Since(start).Round(time.Millisecond))
 }
 
+// segmentMaterializerDisabledEnv is the kill switch for the whole nightly
+// Postgres pass (materializeAll). The boot hydrators and on-demand
+// MaterializeSegment callers are not affected.
+const segmentMaterializerDisabledEnv = "SEGMENT_MATERIALIZER_DISABLED"
+
+func segmentMaterializerDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(segmentMaterializerDisabledEnv)), "true")
+}
+
+// materializerLeavesToGrid reports whether the nightly pass must skip a
+// segment because the lake grid worker is its sole builder. Ownership is the
+// grid worker's own predicate (worker.GridOwnsSegment); with sole ownership
+// off (the default) nothing is skipped.
+func materializerLeavesToGrid(name, conditionsRaw string, gridSoleOwner bool) bool {
+	return gridSoleOwner && worker.GridOwnsSegment(name, conditionsRaw)
+}
+
+// requeueFailedSegment advances a FAILED segment's updated_at so it goes to
+// the back of materializeAll's oldest-first selection. Without it the same
+// failing segments are re-picked first every cycle (2026-11-11: 100 failed /
+// 10 ok in 24h, each failure holding a materialize slot for 600s). Only
+// updated_at moves: the cached count and last_calculated_at still describe
+// the last good build.
+func (m *SegmentMaterializer) requeueFailedSegment(ctx context.Context, segmentID string) {
+	wctx, cancel := ledgerWriteCtx(ctx)
+	defer cancel()
+	if _, err := m.db.ExecContext(wctx, `
+		UPDATE mailing_segments SET updated_at = NOW() WHERE id = $1::uuid
+	`, segmentID); err != nil {
+		log.Printf("[SegmentMaterializer] requeue of failed segment %s: %v", safePrefix(segmentID, 12), err)
+	}
+}
+
 func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
+	if segmentMaterializerDisabled() {
+		log.Printf("[SegmentMaterializer] nightly cycle skipped (%s=true)", segmentMaterializerDisabledEnv)
+		return
+	}
 	// Single-writer gate (see segmentMaterializerLockKey): without it both
 	// ECS instances run the identical 500-segment cycle simultaneously.
 	lock, ok := m.acquireMaterializerLock(ctx, "nightly cycle")
@@ -385,22 +423,28 @@ func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
 		return
 	}
 
-	materialized := 0
+	gridSoleOwner := worker.GridSoleOwnerEnabled()
+	materialized, leftToGrid := 0, 0
 	for _, seg := range segments {
 		if ctx.Err() != nil {
 			break
 		}
+		if materializerLeavesToGrid(seg.name, seg.conditions, gridSoleOwner) {
+			leftToGrid++
+			continue
+		}
 		count, err := m.materializeOne(ctx, seg.id, seg.listID, seg.conditions)
 		if err != nil {
 			log.Printf("[SegmentMaterializer] %s (%s) failed: %v", seg.name, safePrefix(seg.id, 12), err)
+			m.requeueFailedSegment(ctx, seg.id)
 			continue
 		}
 		log.Printf("[SegmentMaterializer] %s — %d members", seg.name, count)
 		materialized++
 	}
 
-	log.Printf("[SegmentMaterializer] materialized %d/%d segments in %s",
-		materialized, len(segments), time.Since(start).Round(time.Millisecond))
+	log.Printf("[SegmentMaterializer] materialized %d/%d segments in %s (%d left to the grid worker)",
+		materialized, len(segments), time.Since(start).Round(time.Millisecond), leftToGrid)
 }
 
 func (m *SegmentMaterializer) materializeOne(ctx context.Context, segmentID, listID, conditionsRaw string) (int, error) {

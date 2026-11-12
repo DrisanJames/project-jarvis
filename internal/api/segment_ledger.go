@@ -105,10 +105,14 @@ func ledgerWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 // ON CONFLICT (segment_id) DO UPDATE covering every summary field.
 // errMsg is truncated to ledgerErrorMaxLen and stored as NULL when empty.
 //
-// last_built_at and subscriber_count only advance when status='ok': a
-// failed/blocked build must neither claim "freshly built" nor overwrite the
-// last good audience count. The status/error/duration/delta fields always
-// reflect the most recent attempt.
+// last_built_at, subscriber_count and build_source only advance when
+// status='ok': a failed/blocked build must neither claim "freshly built" nor
+// overwrite the last good audience count or which builder produced it (a
+// failed Postgres attempt used to relabel a good lake-grid build as
+// 'predispatch'/'materializer'). The status/error/duration/delta fields always
+// reflect the most recent attempt, and a failed attempt's own source is
+// prefixed to last_error as "[source] ". A segment with no successful build
+// yet takes the attempt's source.
 //
 // Best-effort: callers log-and-continue on error.
 func UpsertSegmentLedger(ctx context.Context, db *sql.DB, segmentID string, count int64, source, status string, durMs int, deltaPct float64, errMsg string) error {
@@ -131,18 +135,22 @@ func UpsertSegmentLedger(ctx context.Context, db *sql.DB, segmentID string, coun
 			last_built_at     = CASE WHEN EXCLUDED.last_build_status = 'ok'
 			                         THEN NOW()
 			                         ELSE mailing_segment_build_ledger.last_built_at END,
-			build_source      = EXCLUDED.build_source,
+			build_source      = CASE WHEN EXCLUDED.last_build_status = 'ok'
+			                           OR mailing_segment_build_ledger.last_built_at IS NULL
+			                         THEN EXCLUDED.build_source
+			                         ELSE mailing_segment_build_ledger.build_source END,
 			last_build_status = EXCLUDED.last_build_status,
 			last_build_ms     = EXCLUDED.last_build_ms,
 			last_delta_pct    = EXCLUDED.last_delta_pct,
-			last_error        = EXCLUDED.last_error,
+			last_error        = CASE WHEN EXCLUDED.last_error IS NOT NULL
+			                         THEN '[' || EXCLUDED.build_source || '] ' || EXCLUDED.last_error END,
 			updated_at        = NOW()
 	`, segmentID, count, source, status, durMs, deltaPct, truncateLedgerError(errMsg))
 	return err
 }
 
 // MarkSegmentBuildRunning flags a build as in-flight WITHOUT touching the
-// last good subscriber_count / last_built_at, so readers keep showing the
+// last good subscriber_count / last_built_at / build_source, so readers keep showing the
 // previous successful build while a new one runs. updated_at = NOW() is the
 // staleness clock for ledgerRunningStaleAfter. Best-effort: callers
 // log-and-continue on error.
@@ -157,7 +165,9 @@ func MarkSegmentBuildRunning(ctx context.Context, db *sql.DB, segmentID, source 
 			(segment_id, build_source, last_build_status, updated_at)
 		VALUES ($1::uuid, $2, 'running', NOW())
 		ON CONFLICT (segment_id) DO UPDATE SET
-			build_source      = EXCLUDED.build_source,
+			build_source      = CASE WHEN mailing_segment_build_ledger.last_built_at IS NULL
+			                         THEN EXCLUDED.build_source
+			                         ELSE mailing_segment_build_ledger.build_source END,
 			last_build_status = 'running',
 			last_error        = NULL,
 			updated_at        = NOW()

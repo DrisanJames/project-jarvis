@@ -392,6 +392,26 @@ var segFamilyRe = regexp.MustCompile(`^[A-Z]{2,4}$`)
 // maxRefreshBatch bounds one request's fan-out.
 const maxRefreshBatch = 250
 
+// enqueueSegmentRefresh queues ONE grid refresh request for the
+// SegmentGridWorker to drain. queued is false when the segment already has an
+// open (queued/running) request — the uq_seg_refresh_req_open rail. Shared by
+// the Refresh button (source 'ui') and the pre-dispatch refresher (source
+// 'predispatch').
+func enqueueSegmentRefresh(ctx context.Context, db *sql.DB, segmentID string, orgID any, source string) (reqID string, queued bool, err error) {
+	reqID = uuid.New().String()
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO mailing_segment_refresh_requests
+			(id, segment_id, organization_id, source, status, requested_at)
+		VALUES ($1::uuid, $2::uuid, $3, $4, 'queued', NOW())
+		ON CONFLICT (segment_id) WHERE status IN ('queued','running') DO NOTHING
+	`, reqID, segmentID, orgID, source)
+	if err != nil {
+		return "", false, err
+	}
+	n, _ := res.RowsAffected()
+	return reqID, n > 0, nil
+}
+
 // HandleSegmentRefreshRequest — POST /api/mailing/segments/refresh
 // {"segment_ids":[...]} or {"family":"<CODE>"} → 202 with what was queued.
 // Idempotent: an already queued/running segment is reported in
@@ -515,18 +535,12 @@ func (s *SegmentFreshnessService) HandleSegmentRefreshRequest(w http.ResponseWri
 			continue
 		}
 		seen[t.id] = true
-		reqID := uuid.New().String()
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO mailing_segment_refresh_requests
-				(id, segment_id, organization_id, source, status, requested_at)
-			VALUES ($1::uuid, $2::uuid, $3, 'ui', 'queued', NOW())
-			ON CONFLICT (segment_id) WHERE status IN ('queued','running') DO NOTHING
-		`, reqID, t.id, orgID)
+		reqID, queued, err := enqueueSegmentRefresh(ctx, s.db, t.id, orgID, "ui")
 		if err != nil {
 			resp.Skipped = append(resp.Skipped, segmentRefreshSkipped{SegmentID: t.id, Reason: "queue insert failed: " + err.Error()})
 			continue
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
+		if !queued {
 			resp.AlreadyPending = append(resp.AlreadyPending, t.id)
 			continue
 		}

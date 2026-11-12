@@ -65,6 +65,10 @@ package worker
 // no cron, no sidecar.
 //
 // Kill switch: DISABLE_SEGMENT_GRID_WORKER=true.
+//
+// Env schedule, pass ordering and sole ownership (SEGMENT_GRID_DAILY_AT,
+// SEGMENT_GRID_SECOND_AT, SEGMENT_GRID_SOLE_OWNER — all off by default):
+// segment_grid_schedule.go.
 
 import (
 	"context"
@@ -441,6 +445,13 @@ type SegmentGridWorker struct {
 
 	lastDailyDay     string    // UTC day of the last COMPLETED daily pass
 	lastDailyAttempt time.Time // start of the last daily-pass attempt (cooldown)
+
+	// Env-configured schedule (segment_grid_schedule.go). sched.loc == nil is
+	// the legacy 05:30Z schedule and lastPassTarget is then unused.
+	sched          gridSchedule
+	lastPassTarget time.Time // scheduled instant of the last COMPLETED pass
+	// priorityFn returns the segment ids to build first in a pass.
+	priorityFn func(ctx context.Context) (map[string]bool, error)
 }
 
 func NewSegmentGridWorker(db *sql.DB, redisClient *redis.Client) *SegmentGridWorker {
@@ -471,6 +482,8 @@ func NewSegmentGridWorker(db *sql.DB, redisClient *redis.Client) *SegmentGridWor
 	w.deleteSnapshotFn = analytics.DeleteGridSnapshot
 	w.pruneFn = w.pruneSnapshotsDefault
 	w.loadDeltaStateFn = w.loadDeltaState
+	w.sched = loadGridSchedule(os.Getenv)
+	w.priorityFn = w.loadCampaignSegmentIDs
 	return w
 }
 
@@ -481,13 +494,18 @@ func (w *SegmentGridWorker) Start(ctx context.Context) {
 		log.Printf("[SegmentGrid] disabled (db missing)")
 		return
 	}
-	if os.Getenv("DISABLE_SEGMENT_GRID_WORKER") == "true" {
+	if segmentGridWorkerDisabled() {
 		log.Printf("[SegmentGrid] disabled via DISABLE_SEGMENT_GRID_WORKER")
 		return
 	}
 	setGridState(func(s *SegmentGridWorkerState) { s.Running = true })
-	log.Printf("[SegmentGrid] started (daily %02d:%02dZ grid build + %s on-demand queue; kill: DISABLE_SEGMENT_GRID_WORKER)",
-		segmentGridTargetHourUTC, segmentGridTargetMinUTC, segmentGridTick)
+	if w.sched.loc != nil {
+		log.Printf("[SegmentGrid] started (grid build at %s + %s on-demand queue; kill: DISABLE_SEGMENT_GRID_WORKER)",
+			w.sched.describe(), segmentGridTick)
+	} else {
+		log.Printf("[SegmentGrid] started (daily %02d:%02dZ grid build + %s on-demand queue; kill: DISABLE_SEGMENT_GRID_WORKER)",
+			segmentGridTargetHourUTC, segmentGridTargetMinUTC, segmentGridTick)
+	}
 
 	ticker := time.NewTicker(segmentGridTick)
 	defer ticker.Stop()
@@ -538,6 +556,19 @@ func (w *SegmentGridWorker) tick(ctx context.Context) {
 // target, not already completed today, and past the retry cooldown.
 func (w *SegmentGridWorker) dailyDue() bool {
 	now := w.nowFn().UTC()
+	if w.sched.loc != nil {
+		// Env schedule: due when the most recent scheduled instant has no
+		// completed pass yet. A restart re-fires it; segments built since that
+		// instant are skipped from the ledger (runDailyPass).
+		target := w.sched.lastTarget(now)
+		if target.IsZero() || !w.lastPassTarget.Before(target) {
+			return false
+		}
+		if !w.lastDailyAttempt.IsZero() && now.Sub(w.lastDailyAttempt) < segmentGridPassCooldown {
+			return false
+		}
+		return true
+	}
 	target := time.Date(now.Year(), now.Month(), now.Day(),
 		segmentGridTargetHourUTC, segmentGridTargetMinUTC, 0, 0, time.UTC)
 	if now.Before(target) {
@@ -640,6 +671,20 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 	w.lastDailyAttempt = now
 	start := time.Now()
 
+	// A segment built ok after freshAfter is skipped. Legacy schedule: the
+	// 20h window. Env schedule: anything built since this pass's scheduled
+	// instant (so an earlier pass the same day never suppresses this one).
+	freshAfter := now.Add(-segmentGridFreshSkip)
+	var passTarget time.Time
+	if w.sched.loc != nil {
+		passTarget = w.sched.lastTarget(now)
+		freshAfter = passTarget
+	}
+	markDone := func() {
+		w.lastDailyDay = now.Format("2006-01-02")
+		w.lastPassTarget = passTarget
+	}
+
 	built, skipped, failed := 0, 0, 0
 	hbStatus, hbErr := "ok", ""
 	outcome := "ok"
@@ -677,7 +722,7 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 	}
 	if len(segs) == 0 {
 		outcome = "no grid segments"
-		w.lastDailyDay = now.Format("2006-01-02")
+		markDone()
 		return
 	}
 
@@ -698,7 +743,7 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 	var need []gridSegmentRow
 	for _, s := range segs {
 		lr, ok := ledger[s.spec.ID]
-		if ok && lr.builtAt.Valid && now.Sub(lr.builtAt.Time) < segmentGridFreshSkip {
+		if ok && lr.builtAt.Valid && lr.builtAt.Time.After(freshAfter) {
 			continue
 		}
 		if ok && lr.status == "running" && now.Sub(lr.updatedAt) < segmentGridRunningStaleAfter {
@@ -709,11 +754,21 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 	}
 	if len(need) == 0 {
 		outcome = fmt.Sprintf("all %d grid segments already fresh", len(segs))
-		w.lastDailyDay = now.Format("2006-01-02")
+		markDone()
 		log.Printf("[SegmentGrid] %s", outcome)
 		return
 	}
 	log.Printf("[SegmentGrid] daily pass: %d/%d grid segments need building", len(need), len(segs))
+
+	// Segments a campaign in the next send day mails go first, so a pass cut
+	// short still leaves the board fresh. Best-effort: on error keep name order.
+	if w.priorityFn != nil {
+		if first, perr := w.priorityFn(ctx); perr != nil {
+			log.Printf("[SegmentGrid] campaign-priority read failed (building in name order): %v", perr)
+		} else {
+			need = gridOrderByPriority(need, first)
+		}
+	}
 
 	degraded, b, sk, f := w.buildSegments(ctx, need, ledger)
 	built, skipped, failed = b, sk, f
@@ -728,7 +783,7 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 		return
 	}
 	outcome = "completed"
-	w.lastDailyDay = now.Format("2006-01-02")
+	markDone()
 	log.Printf("[SegmentGrid] daily pass complete: %d built, %d skipped, %d failed in %s",
 		built, skipped, failed, time.Since(start).Round(time.Second))
 }
@@ -1487,9 +1542,10 @@ func (w *SegmentGridWorker) writeSegmentMembers(ctx context.Context, segmentID s
 // ---------------------------------------------------------------------------
 // Ledger writes (inlined SQL — KEEP IN SYNC with internal/api/segment_ledger.go
 // UpsertSegmentLedger / MarkSegmentBuildRunning; this package cannot import
-// internal/api). subscriber_count and last_built_at advance ONLY on 'ok' — a
-// skipped/errored build must neither claim freshly-built nor overwrite the
-// last good count. Best-effort: errors are logged, never control flow.
+// internal/api). subscriber_count, last_built_at and build_source advance ONLY
+// on 'ok' — a skipped/errored build must neither claim freshly-built nor
+// overwrite the last good count or which builder produced it; the attempt's
+// own source is prefixed to last_error instead. Best-effort: errors are logged, never control flow.
 // ---------------------------------------------------------------------------
 
 func (w *SegmentGridWorker) ledgerMarkRunning(ctx context.Context, segmentID, source string) {
@@ -1500,7 +1556,9 @@ func (w *SegmentGridWorker) ledgerMarkRunning(ctx context.Context, segmentID, so
 			(segment_id, build_source, last_build_status, updated_at)
 		VALUES ($1::uuid, $2, 'running', NOW())
 		ON CONFLICT (segment_id) DO UPDATE SET
-			build_source      = EXCLUDED.build_source,
+			build_source      = CASE WHEN mailing_segment_build_ledger.last_built_at IS NULL
+			                         THEN EXCLUDED.build_source
+			                         ELSE mailing_segment_build_ledger.build_source END,
 			last_build_status = 'running',
 			last_error        = NULL,
 			updated_at        = NOW()
@@ -1529,11 +1587,15 @@ func (w *SegmentGridWorker) ledgerUpsert(ctx context.Context, segmentID string, 
 			last_built_at     = CASE WHEN EXCLUDED.last_build_status = 'ok'
 			                         THEN NOW()
 			                         ELSE mailing_segment_build_ledger.last_built_at END,
-			build_source      = EXCLUDED.build_source,
+			build_source      = CASE WHEN EXCLUDED.last_build_status = 'ok'
+			                           OR mailing_segment_build_ledger.last_built_at IS NULL
+			                         THEN EXCLUDED.build_source
+			                         ELSE mailing_segment_build_ledger.build_source END,
 			last_build_status = EXCLUDED.last_build_status,
 			last_build_ms     = EXCLUDED.last_build_ms,
 			last_delta_pct    = EXCLUDED.last_delta_pct,
-			last_error        = EXCLUDED.last_error,
+			last_error        = CASE WHEN EXCLUDED.last_error IS NOT NULL
+			                         THEN '[' || EXCLUDED.build_source || '] ' || EXCLUDED.last_error END,
 			updated_at        = NOW()
 	`, segmentID, count, source, status, durMs, deltaPct, errMsg); err != nil {
 		log.Printf("[SegmentGrid] ledger upsert(%s) failed for %s: %v", status, segmentID, err)

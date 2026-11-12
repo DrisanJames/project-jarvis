@@ -788,6 +788,16 @@ func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderC
 	}
 }
 
+// subscriberEmailMatchParam1SQL matches mailing_subscribers.email to $1 on the
+// platform's canonical email form. The table's only email index is on
+// lower(TRIM(email)) (idx_subscribers_lower_email) and Postgres uses an
+// expression index only for that exact expression: the previous
+// LOWER(email) = LOWER($1) could not use it and scanned the table on every
+// journey personalization load (pg_stat_statements 2026-11-11: 60,828 calls,
+// ~11s each). Same rows for every unpadded address; an address stored or
+// passed with surrounding whitespace now matches too.
+const subscriberEmailMatchParam1SQL = `lower(TRIM(email)) = lower(TRIM($1))`
+
 // loadSubscriberByEmail loads subscriber data for personalization
 func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email string) *mailing.Subscriber {
 	sub := &mailing.Subscriber{}
@@ -809,7 +819,7 @@ func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email stri
 			   optimal_send_hour_utc, COALESCE(timezone, ''),
 			   subscribed_at, unsubscribed_at, created_at, updated_at
 		FROM mailing_subscribers
-		WHERE LOWER(email) = LOWER($1)
+		WHERE `+subscriberEmailMatchParam1SQL+`
 		LIMIT 1
 	`, email).Scan(
 		&sub.ID, &sub.OrganizationID, &sub.ListID, &sub.Email, &sub.EmailHash,

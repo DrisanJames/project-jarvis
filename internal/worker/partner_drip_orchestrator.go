@@ -2565,6 +2565,19 @@ func (po *PartnerDripOrchestrator) datasetDailyISPCaps(ctx context.Context, data
 	return loaded
 }
 
+// pcqISPFamilyIsParam2SQL is the index-usable form of the wrapped
+// LOWER(COALESCE(NULLIF(isp_family, <empty>), 'other')) = $2 predicate for the
+// per-dataset daily-budget counts, where $2 is a lower-case ISP key. The
+// wrapped form cannot use idx_pcq_isp_family (dataset_id, isp_family, status),
+// so every call read all of the dataset's rows (pg_stat_statements 2026-11-11:
+// 2.0M calls, 46B shared blocks). isp_family is NOT NULL DEFAULT 'other' and
+// is stored lower-case and never empty (prod check 2026-11-11: 14 distinct
+// values across 65 datasets, all lower-case, 0 NULL, 0 empty), so plain
+// equality returns the same rows; the second arm keeps the old "empty counts
+// as other" rule. A mixed-case stored value would NOT be counted — writers
+// must keep isp_family lower-case.
+const pcqISPFamilyIsParam2SQL = `(isp_family = $2 OR ($2 = 'other' AND isp_family = ''))`
+
 // applyNewRecordDailyBudget clamps a wave's per-ISP caps to the remaining
 // daily new-record budget (America/Denver day). mailed_at is written exactly
 // once (first touch), so counting rows with mailed_at >= local midnight counts
@@ -2623,7 +2636,7 @@ func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context
 				return tx.QueryRowContext(ctx, `
 					SELECT COUNT(*) FROM partner_clean_queue
 					WHERE dataset_id = $1::uuid
-					  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+					  AND `+pcqISPFamilyIsParam2SQL+`
 					  AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
 				`, datasetID, isp).Scan(&used)
 			}
@@ -2737,7 +2750,7 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 				return tx.QueryRowContext(ctx, `
 					SELECT COUNT(*) FROM partner_clean_queue
 					WHERE dataset_id = $1::uuid
-					  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+					  AND `+pcqISPFamilyIsParam2SQL+`
 					  AND (`+introSpendTermSQL(`
 					    mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
 					    OR`)+`

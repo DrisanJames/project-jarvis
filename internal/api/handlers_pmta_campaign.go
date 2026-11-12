@@ -81,6 +81,8 @@ type PMTACampaignService struct {
 	predispatchRedis         *redis.Client
 	predispatchNowFn         func() time.Time
 	predispatchMaterializeFn func(ctx context.Context, seg predispatchSegment) (int, error)
+	// predispatchGridSoleOwnerFn overrides worker.GridSoleOwnerEnabled (tests).
+	predispatchGridSoleOwnerFn func() bool
 
 	// vdmMetrics overrides the shared SES VDM reader (vdm_metrics.go) for
 	// day-cards tests. Nil means use sharedVDMReader.

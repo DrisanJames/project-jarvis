@@ -90,6 +90,7 @@ type predispatchCell struct {
 
 type predispatchSegment struct {
 	ID         string
+	OrgID      string
 	Name       string
 	ListID     string
 	Conditions string
@@ -228,6 +229,16 @@ func (s *PMTACampaignService) runPreDispatchPass(ctx context.Context, d predispa
 		return "error", "load segments: " + err.Error()
 	}
 	toBuild := predispatchSegmentsToBuild(segs, now)
+	// Grid-owned segments are never rebuilt from Postgres here (the Openers
+	// windows cannot finish inside the 600s budget: 72 failed / 6 ok in 24h on
+	// 2026-11-11). A grid build inside the freshness window is used as it is;
+	// a staler one is handed to the grid worker's refresh queue and the cell
+	// keeps its current members until that build lands.
+	if s.predispatchGridSoleOwner() {
+		var gridStale []predispatchSegment
+		toBuild, gridStale = predispatchSplitGridOwned(toBuild, now, predispatchGridFresh())
+		s.predispatchRequestGridRefresh(ctx, gridStale)
+	}
 	built, failed := s.predispatchMaterialize(ctx, d, toBuild)
 	if len(toBuild) > 0 {
 		log.Printf("[PreDispatch] %d cell(s) in window · %d segment(s) referenced · rebuilt %d · failed %d",
@@ -326,6 +337,71 @@ func predispatchSegmentsToBuild(segs map[string]predispatchSegment, now time.Tim
 	return out
 }
 
+// predispatchGridFreshDflt: a grid-owned segment whose last successful build
+// is newer than this is mailed as it is (one daily grid pass + slack).
+// Override with PREDISPATCH_GRID_FRESH_HOURS.
+const predispatchGridFreshDflt = 26 * time.Hour
+
+func predispatchGridFresh() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("PREDISPATCH_GRID_FRESH_HOURS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 24*14 {
+			return time.Duration(n) * time.Hour
+		}
+	}
+	return predispatchGridFreshDflt
+}
+
+func (s *PMTACampaignService) predispatchGridSoleOwner() bool {
+	if s.predispatchGridSoleOwnerFn != nil {
+		return s.predispatchGridSoleOwnerFn()
+	}
+	return worker.GridSoleOwnerEnabled()
+}
+
+// predispatchSplitGridOwned takes the segments predispatchSegmentsToBuild
+// picked and removes the ones the grid worker owns (worker.GridOwnsSegment).
+// pg is what still goes through MaterializeSegment; gridStale is the
+// grid-owned subset whose last successful build is older than fresh (or
+// absent) and that has had no build attempt in the last
+// predispatchSegmentFresh — those get ONE grid refresh request, not one per
+// tick. A grid-owned segment inside the freshness window is in neither list.
+func predispatchSplitGridOwned(toBuild []predispatchSegment, now time.Time, fresh time.Duration) (pg, gridStale []predispatchSegment) {
+	for _, sg := range toBuild {
+		if !worker.GridOwnsSegment(sg.Name, sg.Conditions) {
+			pg = append(pg, sg)
+			continue
+		}
+		if sg.BuiltAt.Valid && now.Sub(sg.BuiltAt.Time) < fresh {
+			continue
+		}
+		if sg.AttemptAt.Valid && now.Sub(sg.AttemptAt.Time) < predispatchSegmentFresh {
+			continue
+		}
+		gridStale = append(gridStale, sg)
+	}
+	return pg, gridStale
+}
+
+// predispatchRequestGridRefresh queues a grid refresh for each stale
+// grid-owned segment through the same queue the Refresh button writes
+// (mailing_segment_refresh_requests). Best-effort: a failed insert is logged
+// and the cell mails its current members.
+func (s *PMTACampaignService) predispatchRequestGridRefresh(ctx context.Context, segs []predispatchSegment) {
+	for _, sg := range segs {
+		var orgID any // organization_id is nullable on the request row
+		if sg.OrgID != "" {
+			orgID = sg.OrgID
+		}
+		_, queued, err := enqueueSegmentRefresh(ctx, s.db, sg.ID, orgID, "predispatch")
+		switch {
+		case err != nil:
+			log.Printf("[PreDispatch] grid refresh request for %q failed: %v", sg.Name, err)
+		case queued:
+			log.Printf("[PreDispatch] grid segment %q is stale — refresh requested from the grid worker", sg.Name)
+		}
+	}
+}
+
 // predispatchIsHandFilled reports a static segment that carries neither
 // conditions nor a list: its members were written directly (a seed list) and a
 // materialize pass cannot reproduce them.
@@ -407,7 +483,8 @@ func (s *PMTACampaignService) predispatchLoadSegments(ctx context.Context, ids [
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id::text, COALESCE(s.name,''), COALESCE(s.list_id::text,''), COALESCE(s.conditions::text,'[]'),
-		       COALESCE(s.status,''), l.last_built_at, COALESCE(l.last_build_status,''), l.updated_at
+		       COALESCE(s.status,''), l.last_built_at, COALESCE(l.last_build_status,''), l.updated_at,
+		       COALESCE(s.organization_id::text,'')
 		FROM mailing_segments s
 		LEFT JOIN mailing_segment_build_ledger l ON l.segment_id = s.id
 		WHERE s.id::text = ANY($1)
@@ -418,7 +495,7 @@ func (s *PMTACampaignService) predispatchLoadSegments(ctx context.Context, ids [
 	defer rows.Close()
 	for rows.Next() {
 		var sg predispatchSegment
-		if err := rows.Scan(&sg.ID, &sg.Name, &sg.ListID, &sg.Conditions, &sg.Status, &sg.BuiltAt, &sg.BuildState, &sg.AttemptAt); err != nil {
+		if err := rows.Scan(&sg.ID, &sg.Name, &sg.ListID, &sg.Conditions, &sg.Status, &sg.BuiltAt, &sg.BuildState, &sg.AttemptAt, &sg.OrgID); err != nil {
 			return nil, err
 		}
 		// last_built_at is the last SUCCESSFUL build: UpsertSegmentLedger only
