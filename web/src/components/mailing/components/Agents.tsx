@@ -22,7 +22,7 @@ import { DataAgentView, EnvironmentView, type EnvKey } from './AgentsOps';
 type Key = EnvKey | 'data' | 'brain';
 const ENVS: { key: Key; label: string }[] = [
   { key: 'kumo', label: 'Kumo' }, { key: 'pmta_a', label: 'PMTA A' }, { key: 'pmta_b', label: 'PMTA B' }, { key: 'ses', label: 'SES' },
-  { key: 'gmail', label: 'Gmail' }, { key: 'colo1', label: 'Colo 1' }, { key: 'colo2', label: 'Colo 2' }, { key: 'data', label: 'Data' },
+  { key: 'gmail', label: 'Gmail' }, { key: 'colo1', label: 'Colo 1' }, { key: 'colo2', label: 'Colo 2' }, { key: 'radar', label: 'Radar' }, { key: 'data', label: 'Data' },
   { key: 'brain', label: 'Jarvis Brain' },
 ];
 
@@ -49,7 +49,7 @@ const Agents: React.FC<{ initial?: Key }> = ({ initial = 'colo2' }) => {
         {env === 'colo1' && <Panel><EmptyState title="Colo 1 · no agent assigned yet" hint="When a warmup instance is created for this box it appears here with the same views as Colo 2." /></Panel>}
         {env === 'data' && <DataAgentView date={date} />}
         {env === 'brain' && <Brain />}
-        {(env === 'kumo' || env === 'pmta_a' || env === 'pmta_b' || env === 'ses' || env === 'gmail') && <EnvironmentView env={env} date={date} />}
+        {(env === 'kumo' || env === 'pmta_a' || env === 'pmta_b' || env === 'ses' || env === 'gmail' || env === 'radar') && <EnvironmentView env={env} date={date} />}
       </div>
     </div>
   );

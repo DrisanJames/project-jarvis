@@ -56,7 +56,21 @@ type AgentsOverview = {
   ledger: LedgerRow[]; errors?: Record<string, string>;
   ses?: { lane: SesLaneReport | null };
   kumo?: { lane: KumoLaneReport | null };
+  radar?: { latest: RadarLatest | null; brief: RadarBrief | null };
 };
+// Jarvis Radar (agents/radar/report.py write_latest / briefing) — external intelligence: what changed outside the
+// platform, our exposure (lake impact read), what Radar proposes. Rules decide routing; a model only summarises.
+export type RadarEvent = { key: string; kind: string; provider: string; component: string; title: string; summary: string; status: string; severity: string;
+  isps: string[]; deps: string[]; relevance: string; relevance_reason: string; started_at: string; resolved_at: string; resolved_how: string; last_seen_at: string;
+  confirmations: number; refs: { url?: string; retrieved_at?: string; source_id?: string }[];
+  meta?: { action?: string; source_status?: string; llm?: { what_changed?: string; exposure?: string; action?: string; confidence?: string } };
+  impact?: { verdict: string; window?: { messages?: number; delivered?: number; deferred?: number; deferral_share_pct?: number | null; hard?: number; hard_share_pct?: number | null };
+    baseline?: { deferral_share_pct?: number | null }; recovered_at?: string; distinct_signals?: { token: string; window: number; cls: string }[] } };
+export type RadarSourceHealth = { id: string; tier?: string; last_success_at?: string | null; consecutive_failures?: number; last_error?: string | null; last_items?: number | null; enabled?: boolean };
+export type RadarCandidate = { url: string; domain: string; title: string; query?: string; times_seen?: number; found_at?: string; note?: string };
+export type RadarLatest = { as_of: string; open_events: RadarEvent[]; recent_relevant: RadarEvent[]; coverage: string[]; sources: RadarSourceHealth[];
+  source_candidates: RadarCandidate[]; last_run: string; llm_spend_usd_month: number; llm_ceiling_usd: number };
+export type RadarBrief = { day: string; developments: RadarEvent[]; open_incidents: RadarEvent[]; coverage: string[]; generated_at: string; slack_ts?: string };
 
 const VERDICT_COLOR: Record<string, string> = { PASS: colors.success, OK: colors.success, STEP: colors.success, WARN: colors.warning, HOLD: colors.warning, PENDING: colors.idle, FAIL: colors.danger, ERROR: colors.danger, CUT: colors.danger };
 const vcolor = (v: string) => VERDICT_COLOR[v.split(' ')[0]] ?? colors.idle;
@@ -355,7 +369,7 @@ export const DataAgentView: React.FC<{ date: string }> = ({ date }) => {
 // The scheduling agent decides per lane (pmta_nx gates are keyed "A:<isp>" / "B:<isp>"; kumo_nx), verifies readiness
 // per program, and the supervisor repairs per program. Each environment shows only its own lanes / programs.
 
-export type EnvKey = 'kumo' | 'pmta_a' | 'pmta_b' | 'ses' | 'gmail' | 'colo1' | 'colo2';
+export type EnvKey = 'kumo' | 'pmta_a' | 'pmta_b' | 'ses' | 'gmail' | 'colo1' | 'colo2' | 'radar';
 export const ENV_PROGRAMS: Record<EnvKey, string[]> = {
   kumo: ['kumo_estate', 'nx', 'nx_engaged', 'nx_offer', 'nx_eo_supply'],
   pmta_a: ['nx', 'nx_engaged', 'nx_offer', 'mk_lanes', 'nx_eo_supply'],
@@ -364,6 +378,7 @@ export const ENV_PROGRAMS: Record<EnvKey, string[]> = {
   gmail: ['gmail_sidecar'],
   colo1: [],
   colo2: [],
+  radar: [],
 };
 const ENV_LANE: Partial<Record<EnvKey, { lanes: string[]; gatePrefix?: string }>> = {
   kumo: { lanes: ['kumo_nx'] }, pmta_a: { lanes: ['pmta_nx', 'mk_yahoo'], gatePrefix: 'A:' }, pmta_b: { lanes: ['pmta_nx', 'mk_yahoo'], gatePrefix: 'B:' },
@@ -376,6 +391,82 @@ const ENV_NOTE: Record<EnvKey, string> = {
   gmail: 'Gmail — gm.<apex> SES senders (MH on gt., HT/TRB on their own), the gmail sidecar 01:01 MT, A odd / B even days, levels on operator request only.',
   colo1: 'Colo 1 — no agent assigned yet.',
   colo2: 'Colo 2 (15.204.105.55, 199.235.0.0/24) — the warmup agent owns every speed and target here.',
+  radar: 'Jarvis Radar — external intelligence: provider incidents, sender-requirement changes, software and model releases, deliverability research. It alerts and proposes; it holds no sending lever.',
+};
+
+// ───────────────────────────── Jarvis Radar (operator 2026-11-13) — what changed outside, our exposure, what to do
+const RELEVANCE_COLOR: Record<string, string> = { critical: colors.danger, relevant: colors.warning, informational: colors.idle, none: colors.idle };
+const pctOrDash = (v: number | null | undefined) => (v == null ? '—' : `${v}%`);
+
+export const RadarPanel: React.FC<{ latest: RadarLatest | null | undefined; brief: RadarBrief | null | undefined; date: string }> = ({ latest, brief, date }) => {
+  if (!latest && !brief) return <Panel style={{ marginBottom: 14 }}><EmptyState title="No Radar state yet" hint="agents/radar writes state/radar/latest.json on every live collect and state/radar/<date>.json at the 06:00 briefing." /></Panel>;
+  const opens = latest?.open_events ?? [];
+  const cov = latest?.coverage ?? brief?.coverage ?? [];
+  const devs = brief?.developments ?? latest?.recent_relevant ?? [];
+  const cands = latest?.source_candidates ?? [];
+  return (
+    <>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title={`Radar · open incidents`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>as of {latest ? `${denverTime(latest.as_of)} MT` : '—'} · {latest?.last_run ?? ''}</span>} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 12 }}>
+          <Stat label="Open incidents" value={opens.length} color={opens.some((e) => e.relevance === 'critical') ? colors.danger : opens.length ? colors.warning : colors.success} />
+          <Stat label="Sources not delivering" value={cov.length} sub={cov.slice(0, 2).map((c) => c.split(':')[0]).join(' · ') || 'all enabled sources current'} color={cov.length ? colors.warning : colors.success} title={cov.join('\n')} />
+          <Stat label="Source candidates" value={cands.length} sub="awaiting review (sources.py)" />
+          <Stat label="Model spend (month)" value={latest ? `$${latest.llm_spend_usd_month.toFixed(2)}` : '—'} sub={latest ? `ceiling $${latest.llm_ceiling_usd}` : ''} color={latest && latest.llm_spend_usd_month > 0.8 * latest.llm_ceiling_usd ? colors.warning : undefined} />
+        </div>
+        {opens.length === 0 ? <EmptyState title="No open external incidents" hint="Microsoft 365, Google Workspace, AWS Health + SES and Anthropic status are read every 5 minutes." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Provider</th><th style={thStyle}>What the source says</th><th style={thStyle}>Component</th><th style={thStyle}>Since</th><th style={thStyle}>Jarvis observes (lake)</th><th style={thStyle}>Radar proposes</th></tr></thead>
+              <tbody>{opens.map((e) => {
+                const w = e.impact?.window; const b = e.impact?.baseline;
+                return (
+                  <tr key={e.key}>
+                    <td style={{ ...tdStyle, fontWeight: 600 }}><Pill color={RELEVANCE_COLOR[e.relevance] ?? colors.idle} style={{ fontSize: 10, marginRight: 6 }}>{e.relevance}</Pill>{e.provider}</td>
+                    <td style={{ ...tdStyle, maxWidth: 360 }}>{e.title}{e.refs?.[0]?.url && <> · <a href={e.refs[0].url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>source</a></>}<div style={{ fontSize: 11, color: colors.textMuted }}>status "{e.meta?.source_status ?? e.status}" · {e.confirmations} publisher(s)</div></td>
+                    <td style={tdStyle}>{e.component}</td>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{e.started_at ? `${denverTime(e.started_at)} MT` : '—'}</td>
+                    <td style={{ ...tdStyle, fontSize: 12, maxWidth: 340 }}>{e.impact ? (
+                      <>
+                        <Pill color={e.impact.verdict === 'impact_observed' ? colors.danger : e.impact.verdict === 'impact_suspected' ? colors.warning : e.impact.verdict === 'no_impact_observed' ? colors.success : colors.idle} style={{ fontSize: 10 }}>{e.impact.verdict.replace(/_/g, ' ')}</Pill>
+                        {w && <div>deferred {pctOrDash(w.deferral_share_pct)} of {fmt(w.messages)} msgs (baseline {pctOrDash(b?.deferral_share_pct)}) · hard {pctOrDash(w.hard_share_pct)}</div>}
+                        {e.impact.recovered_at && <div style={{ color: colors.textMuted }}>our recovery {denverTime(e.impact.recovered_at)} MT</div>}
+                        {(e.impact.distinct_signals ?? []).slice(0, 2).map((s) => <div key={s.token} style={{ color: colors.warningText }}>distinct signal {s.token} · {fmt(s.window)} msgs · codebook {s.cls}</div>)}
+                      </>
+                    ) : <span style={{ color: colors.textMuted }}>no lake read yet</span>}</td>
+                    <td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted, maxWidth: 320 }}>{e.meta?.llm?.exposure ? <div style={{ color: colors.text }}>{e.meta.llm.exposure}</div> : null}{e.meta?.action ?? ''}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title={brief ? `Daily briefing · ${brief.day}` : `Relevant in the last 24 h`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>06:00 MT · at most five developments · {date}</span>} />
+        {devs.length === 0 ? <EmptyState title="Nothing relevant" /> : (
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Who</th><th style={thStyle}>Kind</th><th style={thStyle}>State</th><th style={thStyle}>What</th><th style={thStyle}>Next</th></tr></thead>
+            <tbody>{devs.slice(0, 8).map((e) => <tr key={e.key}><td style={tdStyle}>{e.provider}</td><td style={tdStyle}>{e.kind}</td><td style={tdStyle}><Pill color={RELEVANCE_COLOR[e.relevance] ?? colors.idle} style={{ fontSize: 10 }}>{e.kind === 'incident' ? e.status : e.relevance}</Pill></td><td style={{ ...tdStyle, maxWidth: 420 }}>{e.title}{e.meta?.llm?.what_changed && <div style={{ fontSize: 11, color: colors.textMuted }}>{e.meta.llm.what_changed}</div>}</td><td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted, maxWidth: 360 }}>{e.meta?.action ?? ''}</td></tr>)}</tbody>
+          </table>
+        )}
+      </Panel>
+      {(cands.length > 0 || cov.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14, marginBottom: 14 }}>
+          <Panel>
+            <SectionHeader title="Coverage" />
+            {cov.length === 0 ? <EmptyState title="Every enabled source is current" /> : <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>{cov.map((c) => <li key={c} style={{ color: colors.warningText }}>{c}</li>)}</ul>}
+          </Panel>
+          <Panel>
+            <SectionHeader title="New source candidates · review queue" right={<span style={{ fontSize: 11, color: colors.textMuted }}>promote by adding to agents/radar/sources.py</span>} />
+            {cands.length === 0 ? <EmptyState title="None pending" /> : (
+              <table style={tableStyle}><tbody>{cands.slice(0, 10).map((c) => <tr key={c.url}><td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>{c.domain}</td><td style={{ ...tdStyle, fontSize: 12 }}><a href={c.url} target="_blank" rel="noreferrer" style={{ color: colors.text }}>{c.title || c.url}</a>{c.note && <div style={{ color: colors.textMuted }}>{c.note}</div>}</td><td style={numTd}>{c.times_seen ?? 1}×</td></tr>)}</tbody></table>
+            )}
+          </Panel>
+        </div>
+      )}
+    </>
+  );
 };
 
 // ───────────────────────────── gmail lane status (operator 2026-10-27: "displays the information I request of you daily")
@@ -478,6 +569,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
       {env === 'kumo' && <KumoLaneToday report={data?.kumo?.lane} date={date} />}
       {pmtaServer && <PmtaDailyRead read={data?.pmta?.read ?? null} server={pmtaServer} date={date} />}
       {env === 'gmail' && <GmailLanePanel lane={data?.gmail?.lane} decision={(J?.volume ?? []).find((l) => l.lane === 'gmail')} />}
+      {env === 'radar' && <RadarPanel latest={data?.radar?.latest} brief={data?.radar?.brief} date={date} />}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader title="Decisions · scheduling agent" icon={faCalendarCheck}
           right={(

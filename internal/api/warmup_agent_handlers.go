@@ -131,6 +131,12 @@ type agentsOverview struct {
 	Kumo struct {
 		Lane json.RawMessage `json:"lane"`
 	} `json:"kumo"`
+	// Jarvis Radar (agents/radar, 2026-11-13): latest.json = open external incidents with their lake impact verdict,
+	// coverage, source candidates, model spend; <D>.json = that day's 06:00 briefing payload.
+	Radar struct {
+		Latest json.RawMessage `json:"latest"`
+		Brief  json.RawMessage `json:"brief"`
+	} `json:"radar"`
 	Ledger []json.RawMessage `json:"ledger"`
 	Errors map[string]string `json:"errors,omitempty"`
 }
@@ -190,6 +196,9 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 	go getJSON("ses.lane", "state/ses_lane/"+date+".json", &out.SES.Lane)
 	wg.Add(1) // kumo_lane/<D>.json — the Kumo Colo1 day as reported to the operator daily (agents/reporting/kumo_lane_today.py)
 	go getJSON("kumo.lane", "state/kumo_lane/"+date+".json", &out.Kumo.Lane)
+	wg.Add(2) // radar/latest.json + radar/<D>.json — Jarvis Radar (agents/radar/report.py write_latest / briefing)
+	go getJSON("radar.latest", "state/radar/latest.json", &out.Radar.Latest)
+	go getJSON("radar.brief", "state/radar/"+date+".json", &out.Radar.Brief)
 	go func() {
 		defer wg.Done()
 		rows, err := s.ledgerForDate(ctx, strings.ReplaceAll(date, "-", ""))
