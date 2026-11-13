@@ -13,6 +13,12 @@ func TestIsCapacityTransient(t *testing.T) {
 		"KumoMTA internal: failed to send message: Error Connection closed by peer reading response to cmd=RSET",
 		"KumoMTA internal: no sources for x@yahoo.com pool=`mta-aad-yh2` are eligible for selection at this time",
 		"smtp;421 4.7.0 [TSS03] All messages from 1.2.3.4 will be permanently deferred",
+		// Microsoft Exchange Online incident 2026-11-12/13 — provider front door, not the mailbox (brain #30723)
+		"smtp;451 4.7.0 Temporary server error. Please try again later. PRX3 NextHop: substrate-int.office.com. Last IP: 2603:10b6:3d0::1",
+		"Temporary server error. Please try again later. PRX5 NextHop: substrate-int.office.com. Next Hop IP: 1.2.3.4",
+		"KumoMTA internal: failed to send message: Error Connection reset by peer (os error 104) reading response to cmd=DATA",
+		"KumoMTA internal: failed to send message: Error Broken pipe (os error 32) writing RSET",
+		"KumoMTA internal: failed to connect to any candidate hosts: connect to 1.2.3.4:25 and read initial banner: Command timeout",
 	}
 	for _, d := range yes {
 		if !isCapacityTransient(d) {

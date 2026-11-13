@@ -195,6 +195,15 @@ var capacityTransientMarkers = []string{
 	"Connection closed by peer",   // KumoMTA internal: remote dropped the session
 	"no sources for",              // KumoMTA internal: all sources suspended / at rate rail
 	"4.7.0 [TS",                   // Yahoo TSS family (TSS01/02/03/05) — policy/velocity, not mailbox
+	// 2026-11-12/13 Microsoft Exchange Online incident (brain #30723): the provider's front door answered
+	// "451 4.7.0 Temporary server error. Please try again later. PRXn NextHop: substrate-int.office.com" on
+	// 74% of Microsoft traffic for 18 h, and Kumo sessions were reset mid-stream. agent_microsoft counted
+	// them as repeated-transient and globally suppressed 59,922 mailboxes (36,237 engaged in 30 d). These
+	// strings describe the receiving infrastructure, never the mailbox.
+	"Temporary server error. Please try again later", // Microsoft 4.7.0 / 4.3.2 PRX front-door transient
+	"Connection reset by peer",                       // KumoMTA internal: remote reset the session
+	"Broken pipe",                                    // KumoMTA internal: remote closed while we were writing
+	"failed to connect to any candidate hosts",       // KumoMTA internal: receiver unreachable on :25
 }
 
 // isCapacityTransient reports whether a transient diagnostic is a capacity or
