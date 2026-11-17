@@ -636,7 +636,9 @@ const lateLimitBodyLines = 5
 
 // stalledDrainCooldown is how long a campaign stays muted after it has been
 // reported by checkStalledDrain.
-const stalledDrainCooldown = time.Hour
+// 6h since 2026-11-17 (operator: "confirm which are worth notification"): at 1h
+// the same slow drain re-posted all day — 285 posts in 48h.
+const stalledDrainCooldown = 6 * time.Hour
 
 // stalledDrainLimit caps the rows checkStalledDrain reads per tick.
 const stalledDrainLimit = 25
@@ -651,6 +653,9 @@ const stalledDrainEveryTicks = 5
 // planned-wave probe — no scan of every wave of every sending campaign (the
 // MAX(window_end_at) shape timed out at 120s on prod, 2026-11-04).
 // $1 = campaign ids still inside the alert cooldown (excluded).
+// q.queued >= 250 (2026-11-17): fewer overdue rows than that is a tail of
+// deferred recipients, not a stalled drain ("1 campaign past window still
+// draining · 21 recipients" posted every hour).
 //
 // The CTE is a SEPARATE prefix (stalledDrainCTE) because a WITH clause must
 // come BEFORE the SELECT: the first deploy (:1232, 2026-11-05) composed
@@ -670,6 +675,7 @@ const stalledDrainFrom = `
 		FROM q
 		JOIN mailing_campaigns c ON c.id = q.campaign_id
 		WHERE c.status = 'sending'
+		  AND q.queued >= 250
 		  AND c.scheduled_at > NOW() - interval '2 days'
 		  AND NOT (c.id = ANY($1::uuid[]))
 		  AND NOT EXISTS (
