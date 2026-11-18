@@ -484,7 +484,38 @@ type eoOutcome struct {
 // The transport + classification live in callEOValidation (shared with
 // EOCleanJobWorker) — this wrapper only binds the validator's client/record.
 func (pv *PartnerValidator) callEO(ctx context.Context, rec pendingRecord) eoOutcome {
-	return callEOValidation(ctx, pv.eoClient, rec.email)
+	return comcastUnknownAsValid(rec.isp, callEOValidation(ctx, pv.eoClient, rec.email),
+		os.Getenv("PARTNER_EO_COMCAST_UNKNOWN_VALID"))
+}
+
+// eoResultUnknown is EmailOversight's ResultId for "Unknown" (no verdict).
+const eoResultUnknown = 11
+
+// comcastUnknownAsValid applies the operator ruling of 2026-11-18: "Let's
+// categorize unknowns as valid for the Comcast lane." Measured that morning,
+// 57 pct of Comcast addresses came back Unknown (844 of 1,486) against 1 pct at
+// Microsoft, so the retry arm burned three paid checks per row and dead-lettered
+// people the Comcast lane is meant to mail.
+//
+// Scope is exact: isp_family 'comcast' AND ResultId 11 (Unknown) only. ResultId 0
+// (Retry), transport errors and every other provider keep the retry arm.
+//
+// The row is stored with eo_result 'Verified' because every consumer of the
+// queue (family lanes, pipeline, fresh broadcast, slicer) selects on that text;
+// eo_result_code stays 11, which is how these rows are told apart from a real
+// Verified (code 1). Off switch without a deploy of code: env
+// PARTNER_EO_COMCAST_UNKNOWN_VALID=0.
+func comcastUnknownAsValid(isp string, o eoOutcome, envOff string) eoOutcome {
+	if strings.TrimSpace(envOff) == "0" {
+		return o
+	}
+	if o.kind != outcomeRetry || o.resultID != eoResultUnknown {
+		return o
+	}
+	if strings.ToLower(strings.TrimSpace(isp)) != "comcast" {
+		return o
+	}
+	return eoOutcome{kind: outcomeReady, resultID: eoResultUnknown, result: "Verified"}
 }
 
 // callEOValidation is the SHARED EO transport + classification used by BOTH
