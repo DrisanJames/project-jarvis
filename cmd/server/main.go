@@ -1733,10 +1733,8 @@ func main() {
 							if eoListID <= 0 {
 								eoListID = 1
 							}
-							eoConcurrency := cfg.DataPipeline.EOConcurrency
-							if eoConcurrency <= 0 {
-								eoConcurrency = 10
-							}
+							eoConcurrency, eoConcSrc := worker.ResolveEOConcurrency(cfg.DataPipeline.EOConcurrency, os.Getenv("PARTNER_EO_CONCURRENCY"))
+							log.Printf("[PartnerValidator] EO concurrency %d (%s, max %d)", eoConcurrency, eoConcSrc, worker.EOConcurrencyMax)
 							eoClient := emailoversight.New(eoToken, eoListID, eoConcurrency)
 							partnerValidator = worker.NewPartnerValidator(mailingDB, eoClient, worker.PartnerValidatorConfig{
 								BatchSize:      500,
