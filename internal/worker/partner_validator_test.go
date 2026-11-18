@@ -151,8 +151,11 @@ func TestValidator_EmitsOneEventPerOutcomePerBatch(t *testing.T) {
 	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = 'ready'`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = 'suppressed_eo'`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO mailing_global_suppressions`).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = 'dead_letter'`).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = 'pending_eo'`).WillReturnResult(sqlmock.NewResult(0, 1))
+	// retries keep EO's answer as evidence (extra_metadata.eo_retry_last); the last attempt lands dead_letter
+	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = \$2,.*eo_retry_last`).
+		WithArgs("4", "dead_letter", "Unknown", 11).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = \$2,.*eo_retry_last`).
+		WithArgs("5", "pending_eo", "Unknown", 11).WillReturnResult(sqlmock.NewResult(0, 1))
 	// ONE dataset lookup for the whole batch — the 60s cache is what keeps this
 	// off the database on a real tick.
 	mock.ExpectQuery(`SELECT d.source_channel`).
@@ -216,5 +219,29 @@ func TestValidator_EmitsOneEventPerOutcomePerBatch(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet DB expectations: %v", err)
+	}
+}
+
+
+// TestClaimPendingEO_SpacesRetries: a retried row is not re-claimed until RetryBackoff x eo_attempts after its last
+// claim (2026-11-17: back-to-back retries dead-lettered 1,839 of 2,761 released Comcast rows with no verdict).
+func TestClaimPendingEO_SpacesRetries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	pv := NewPartnerValidator(db, &fakeEOValidator{}, PartnerValidatorConfig{})
+	if pv.cfg.RetryBackoff.Minutes() != 30 {
+		t.Fatalf("default RetryBackoff = %v, want 30m", pv.cfg.RetryBackoff)
+	}
+	mock.ExpectQuery(`(?s)eo_attempts < \$1\s+AND \(eo_attempts = 0 OR claimed_at IS NULL\s+OR claimed_at < NOW\(\) - make_interval\(secs => \$3::float8 \* eo_attempts\)\).*LIMIT \$2`).
+		WithArgs(3, 500, float64(1800)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "email_md5", "eo_attempts", "dataset_id", "partner_id", "vertical", "isp", "slug"}))
+	if _, err := pv.claimPendingEO(context.Background()); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
 }

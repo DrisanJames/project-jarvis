@@ -41,6 +41,12 @@ type PartnerValidatorConfig struct {
 	PollInterval   time.Duration // default 30s
 	Concurrency    int           // EO calls in parallel (default 10)
 	MaxRetries     int           // before giving up (default 3)
+	// RetryBackoff spaces EO retries: a row whose last attempt returned Retry/Unknown (or a transport error) is not
+	// re-claimed until RetryBackoff x eo_attempts after its last claim (default 30m). 2026-11-17: without it the FIFO
+	// claim (ORDER BY ingested_at) re-took a retried row on the very next 30 s cycle, so all 3 attempts landed inside
+	// ~1 h and 1,839 of 2,761 released Comcast rows went dead_letter with no verdict (25.3% of Spicy Comcast over
+	// 10-18..11-16). Comcast's Unknown is a temporary mailbox-check answer; a spaced retry is what it needs.
+	RetryBackoff time.Duration
 	OrganizationID string        // used for global suppression inserts (must match GlobalSuppressionHub orgID)
 }
 
@@ -74,6 +80,9 @@ func NewPartnerValidator(db *sql.DB, eoClient EOValidator, cfg PartnerValidatorC
 	}
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
+	}
+	if cfg.RetryBackoff <= 0 {
+		cfg.RetryBackoff = 30 * time.Minute
 	}
 	if cfg.OrganizationID == "" {
 		cfg.OrganizationID = "00000000-0000-0000-0000-000000000001"
@@ -182,6 +191,8 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 			FROM partner_clean_queue
 			WHERE status = 'pending_eo'
 			  AND eo_attempts < $1
+			  AND (eo_attempts = 0 OR claimed_at IS NULL
+			       OR claimed_at < NOW() - make_interval(secs => $3::float8 * eo_attempts))
 			ORDER BY ingested_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
@@ -193,7 +204,7 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 		RETURNING q.id, q.email, q.email_md5, q.eo_attempts, q.dataset_id, q.partner_id, q.vertical,
 		          lower(COALESCE(NULLIF(q.isp_family, ''), 'other')),
 		          COALESCE((SELECT d.slug FROM partner_datasets d WHERE d.id = q.dataset_id), '')
-	`, pv.cfg.MaxRetries, pv.cfg.BatchSize)
+	`, pv.cfg.MaxRetries, pv.cfg.BatchSize, pv.cfg.RetryBackoff.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +281,12 @@ func (pv *PartnerValidator) validateAndApply(ctx context.Context, batch []pendin
 			}
 		case outcomeRetry:
 			retry++
-			if err := pv.markRetry(ctx, rec); err != nil {
+			if err := pv.markRetry(ctx, rec, outcome); err != nil {
 				log.Printf("[PartnerValidator] mark_retry %s: %v", rec.id, err)
 			}
 		default:
 			errored++
-			if err := pv.markRetry(ctx, rec); err != nil {
+			if err := pv.markRetry(ctx, rec, outcome); err != nil {
 				log.Printf("[PartnerValidator] mark_retry_after_error %s: %v", rec.id, err)
 			}
 		}
@@ -540,23 +551,28 @@ func (pv *PartnerValidator) markSuppressed(ctx context.Context, rec pendingRecor
 
 // markRetry returns the row to pending_eo for the next cycle. If we've hit
 // the retry cap, it falls into 'dead_letter' so the validator stops trying.
-func (pv *PartnerValidator) markRetry(ctx context.Context, rec pendingRecord) error {
+//
+// The retry's EO answer (Retry/Unknown result text, or the transport error) is kept in
+// extra_metadata.eo_retry_last / eo_retry_code — eo_result stays NULL (no verdict), so every reader that keys on
+// eo_result is unchanged. Before 2026-11-17 it was discarded, and a dead_letter row carried no evidence of why.
+func (pv *PartnerValidator) markRetry(ctx context.Context, rec pendingRecord, outcome eoOutcome) error {
+	why := outcome.result
+	if len(why) > 200 {
+		why = why[:200]
+	}
+	status := "pending_eo"
 	if rec.attempts+1 >= pv.cfg.MaxRetries {
-		_, err := pv.db.ExecContext(ctx, `
-			UPDATE partner_clean_queue
-			SET status = 'dead_letter',
-			    eo_attempts = eo_attempts + 1,
-			    validated_at = NOW()
-			WHERE id = $1
-		`, rec.id)
-		return err
+		status = "dead_letter"
 	}
 	_, err := pv.db.ExecContext(ctx, `
 		UPDATE partner_clean_queue
-		SET status = 'pending_eo',
-		    eo_attempts = eo_attempts + 1
+		SET status = $2,
+		    eo_attempts = eo_attempts + 1,
+		    validated_at = CASE WHEN $2 = 'dead_letter' THEN NOW() ELSE validated_at END,
+		    extra_metadata = COALESCE(extra_metadata, '{}'::jsonb)
+		                     || jsonb_build_object('eo_retry_last', $3::text, 'eo_retry_code', $4::int)
 		WHERE id = $1
-	`, rec.id)
+	`, rec.id, status, why, outcome.resultID)
 	return err
 }
 

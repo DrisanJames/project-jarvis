@@ -130,7 +130,8 @@ func pvLedgerDB(t *testing.T) *sql.DB {
 			eo_attempts    INT NOT NULL DEFAULT 0,
 			ingested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			validated_at   TIMESTAMPTZ,
-			claimed_at     TIMESTAMPTZ
+			claimed_at     TIMESTAMPTZ,
+			extra_metadata JSONB
 		)`,
 		`CREATE TABLE partner_datasets (
 			id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
