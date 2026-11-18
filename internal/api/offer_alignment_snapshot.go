@@ -163,25 +163,85 @@ func (s *Server) StartOfferAlignmentWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
-		runOnce := func() {
+		// The cadence is keyed on the SNAPSHOT's age, not on this process's
+		// uptime. Before 2026-11-18 every task rebuilt at boot and then on its
+		// own 3h ticker: the advisory lock stops two tasks overlapping, but not
+		// two tasks (or a deploy's fresh boots) each rebuilding a snapshot that
+		// was minutes old — 14 rebuilds on 2026-11-17 where the 3h cadence
+		// needs 8, at ~0.9 TB of Athena scan each.
+		var lastAttempt time.Time
+		poll := func() {
+			built, err := s.offerAlignmentLastBuilt(ctx)
+			if err != nil {
+				log.Printf("[offer-alignment-worker] last-built read: %v", err)
+			}
+			now := time.Now()
+			if !offerAlignmentRefreshDue(built, err == nil, lastAttempt, now) {
+				return
+			}
+			lastAttempt = now
 			rc, cancel := context.WithTimeout(ctx, offerAlignmentRefreshTimeout)
 			defer cancel()
 			if err := s.RefreshOfferAlignmentSnapshot(rc); err != nil {
 				log.Printf("[offer-alignment-worker] refresh: %v", err)
 			}
 		}
-		runOnce()
-		ticker := time.NewTicker(offerAlignmentRefreshInterval)
+		poll()
+		ticker := time.NewTicker(offerAlignmentPollInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runOnce()
+				poll()
 			}
 		}
 	}()
+}
+
+const (
+	// offerAlignmentPollInterval — how often the worker asks "is the snapshot
+	// due?". The question is one indexed MAX() on a small table.
+	offerAlignmentPollInterval = 5 * time.Minute
+	// offerAlignmentRefreshAfter — a rebuild starts once the snapshot is this
+	// old. A rebuild takes roughly half an hour, so completions stay ~3h apart
+	// (offerAlignmentRefreshInterval), the cadence the matrix has always had.
+	offerAlignmentRefreshAfter = offerAlignmentRefreshInterval - 30*time.Minute
+	// offerAlignmentRetryAfter — floor between this task's own attempts, so a
+	// rebuild that keeps failing cannot re-scan the lake every poll.
+	offerAlignmentRetryAfter = time.Hour
+)
+
+// offerAlignmentRefreshDue decides whether the worker should rebuild now.
+// builtKnown=false (the last-built read failed) falls back to the old
+// behaviour: at most one attempt per offerAlignmentRefreshInterval.
+func offerAlignmentRefreshDue(built time.Time, builtKnown bool, lastAttempt, now time.Time) bool {
+	if !builtKnown {
+		return lastAttempt.IsZero() || now.Sub(lastAttempt) >= offerAlignmentRefreshInterval
+	}
+	if !lastAttempt.IsZero() && now.Sub(lastAttempt) < offerAlignmentRetryAfter {
+		return false
+	}
+	return built.IsZero() || now.Sub(built) >= offerAlignmentRefreshAfter
+}
+
+// offerAlignmentLastBuilt is when ANY task last completed a rebuild (zero =
+// never built).
+func (s *Server) offerAlignmentLastBuilt(ctx context.Context) (time.Time, error) {
+	if s.mailingDB == nil {
+		return time.Time{}, fmt.Errorf("mailing db not configured")
+	}
+	qc, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var t sql.NullTime
+	if err := s.mailingDB.QueryRowContext(qc, `SELECT MAX(refreshed_at) FROM mailing_offer_alignment_snapshot`).Scan(&t); err != nil {
+		return time.Time{}, err
+	}
+	if !t.Valid {
+		return time.Time{}, nil
+	}
+	return t.Time, nil
 }
 
 // offerAlignmentKickPending bounds background kicks to ONE pending goroutine:

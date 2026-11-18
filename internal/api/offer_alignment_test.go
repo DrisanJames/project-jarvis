@@ -547,3 +547,32 @@ func TestOfferAlignmentWindows(t *testing.T) {
 		t.Fatalf("a short range widens to the 14d campaign set: %v", got)
 	}
 }
+
+// The worker rebuilds on the snapshot's age, not on process uptime: a fresh
+// snapshot (another task, or the pre-deploy task) must NOT trigger a rebuild.
+func TestOfferAlignmentRefreshDue(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	never := time.Time{}
+	cases := []struct {
+		name        string
+		built       time.Time
+		known       bool
+		lastAttempt time.Time
+		want        bool
+	}{
+		{"never built", never, true, never, true},
+		{"built 5 min ago by another task (boot after deploy)", now.Add(-5 * time.Minute), true, never, false},
+		{"built 2h29m ago", now.Add(-149 * time.Minute), true, never, false},
+		{"built 2h30m ago", now.Add(-150 * time.Minute), true, never, true},
+		{"stale but this task tried 10 min ago (failing rebuild)", now.Add(-5 * time.Hour), true, now.Add(-10 * time.Minute), false},
+		{"stale and last try was 61 min ago", now.Add(-5 * time.Hour), true, now.Add(-61 * time.Minute), true},
+		{"age unreadable, first attempt", never, false, never, true},
+		{"age unreadable, tried 1h ago", never, false, now.Add(-time.Hour), false},
+		{"age unreadable, tried 3h ago", never, false, now.Add(-3 * time.Hour), true},
+	}
+	for _, c := range cases {
+		if got := offerAlignmentRefreshDue(c.built, c.known, c.lastAttempt, now); got != c.want {
+			t.Errorf("%s: due=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
