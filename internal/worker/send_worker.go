@@ -1300,8 +1300,12 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		log.Printf("[ISPDispatch] Error querying ISP campaigns: %v", err)
 		return
 	}
-	defer rows.Close()
-
+	// Collect the full id set first and close the cursor before any per-campaign
+	// work. Refreshing inside the open cursor let the 5s scan ctx expire mid-scan;
+	// rows.Next() then stopped silently and the eviction pass below dropped every
+	// unscanned (still-sending) campaign (ops incident 8cd92d2484, 2026-11-18).
+	type ispCampaignRow struct{ id, quotasJSON string }
+	var scanned []ispCampaignRow
 	activeCampaigns := make(map[string]bool)
 	for rows.Next() {
 		var campID, quotasJSON string
@@ -1309,6 +1313,16 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			continue
 		}
 		activeCampaigns[campID] = true
+		scanned = append(scanned, ispCampaignRow{campID, quotasJSON})
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		log.Printf("[ISPDispatch] Campaign scan truncated after %d rows (%v); skipping eviction this tick", len(scanned), scanErr)
+	}
+
+	for _, sc := range scanned {
+		campID, quotasJSON := sc.id, sc.quotasJSON
 
 		if st, exists := states[campID]; exists {
 			if time.Since(st.lastRefreshAt) >= 15*time.Second {
@@ -1383,10 +1397,12 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			campID, quotas, state.plan, state.remaining, numBatches)
 	}
 
-	for campID := range states {
-		if !activeCampaigns[campID] {
-			log.Printf("[ISPDispatch] Campaign %s no longer sending, removing state", campID)
-			delete(states, campID)
+	if scanErr == nil {
+		for campID := range states {
+			if !activeCampaigns[campID] {
+				log.Printf("[ISPDispatch] Campaign %s no longer sending, removing state", campID)
+				delete(states, campID)
+			}
 		}
 	}
 
