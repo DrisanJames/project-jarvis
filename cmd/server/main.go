@@ -42,6 +42,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brandident"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/preferences"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
@@ -939,6 +940,18 @@ func main() {
 			}
 			go outboxSelfCheck.Start(ctx)
 			log.Println("Outbox Self-Check started (5m interval, 30m re-alert suppression)")
+
+			// Queue planner-statistics guard (2026-11-18 stall root cause:
+			// partial-index reltuples=0 after an autoanalyze on a drained queue).
+			// Reads the self-check's queued depth; ANALYZE under a distlock.
+			// QUEUE_STATS_GUARD=off|observe.
+			queueStatsGuard := worker.NewQueueStatsGuard(mailingDB,
+				distlock.NewLock(redisClient, mailingDB, worker.QueueStatsGuardLockKey, 10*time.Minute))
+			if _, noop := outboxNotifier.(notify.NoopNotifier); !noop {
+				queueStatsGuard.SetAlerter(worker.NewSlackAlerterTiered(outboxNotifier, notify.ScopeSend, notify.TierAlert), []string{"slack"})
+			}
+			go queueStatsGuard.Start(ctx)
+			log.Printf("Queue stats guard started (mode=%s)", queueStatsGuard.Mode())
 
 			// Storage guard — state-aware replication slot / WAL / queue / acct monitoring.
 			storageGuard := worker.NewStorageGuard(mailingDB, replicaConfigured)

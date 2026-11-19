@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/dbscan"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
@@ -178,6 +179,22 @@ type SendWorkerPool struct {
 	// reads never touch the send hot path. See SA-7 in
 	// PER_DOMAIN_ENGAGEMENT_ENGINE_SPEC.md.
 	throughputTracker *DomainThroughputTracker
+
+	// ISP dispatcher kill switches (read once in Start, logged at boot). The
+	// zero value is the NEW behaviour so pools built without Start (tests)
+	// get it too.
+	//   ispLegacyEviction — ISP_DISPATCH_LKG=off: evict on the first complete
+	//                       scan a campaign is absent from, 60s cooldown
+	//                       (9579495 semantics).
+	//   ispSerialRefresh  — ISP_DISPATCH_BULK_REFRESH=off: per-campaign
+	//                       remaining refresh (one query per tracked campaign).
+	ispLegacyEviction bool
+	ispSerialRefresh  bool
+	// Owned by the single ispDispatchLoop goroutine.
+	ispLastBulkRefresh time.Time
+	// Test seams; zero = the production defaults below.
+	ispRefreshBudget time.Duration
+	ispBulkTimeout   time.Duration
 }
 
 // SetOutboxMode toggles the durable-outbox state machine. Pass "durable" to
@@ -829,7 +846,11 @@ func (p *SendWorkerPool) Start() {
 	p.running = true
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.workCh = make(chan QueueItem, p.batchSize*2)
+	p.ispLegacyEviction, p.ispSerialRefresh = ispKillSwitchesFromEnv()
 	p.mu.Unlock()
+
+	log.Printf("[ISPDispatch] kill switches: ISP_DISPATCH_LKG=%s ISP_DISPATCH_BULK_REFRESH=%s",
+		onOff(!p.ispLegacyEviction), onOff(!p.ispSerialRefresh))
 
 	log.Printf("SendWorkerPool: Starting %d channel workers (batch_size=%d, channel_buf=%d)", p.numWorkers, p.batchSize, p.batchSize*2)
 
@@ -1223,7 +1244,9 @@ func (p *SendWorkerPool) claimISPBatch(campaignID string, batchCounts map[string
 			defer wg.Done()
 			items, err := p.claimISPForOne(ctx, campaignID, isp, count)
 			if err != nil {
-				log.Printf("[ISPDispatch] claim error campaign=%s isp=%s: %v", campaignID, isp, err)
+				if p.ctx.Err() == nil { // shutdown cancellations are not claim errors
+					noteClaimError(campaignID, isp, err)
+				}
 				return
 			}
 			ch <- ispResult{isp: isp, items: items}
@@ -1253,6 +1276,108 @@ type ispCampaignState struct {
 	remaining     map[string]int // per-ISP queued items left (from DB, refreshed periodically)
 	lastRefreshOK bool           // whether the most recent DB refresh succeeded
 	lastRefreshAt time.Time      // when remaining was last refreshed from DB
+	// missedScans counts consecutive COMPLETE campaign scans this campaign was
+	// absent from. Eviction needs ispEvictAfterMisses of them (a scan error
+	// neither increments nor resets it).
+	missedScans int
+}
+
+const (
+	// ispRefreshInterval is how stale a campaign's remaining counts may get
+	// before the next DB refresh (bulk: one query for every tracked id).
+	ispRefreshInterval = 15 * time.Second
+	// ispRefreshBudgetDefault caps everything refreshISPCampaigns does in one
+	// tick (scan + bulk refresh + admissions + orphan warning), so dispatch
+	// runs every tick from last-known-good state however slow the DB is.
+	ispRefreshBudgetDefault = 8 * time.Second
+	// ispScanTimeout bounds the sending-campaign scan inside the budget.
+	ispScanTimeout = 3 * time.Second
+	// ispBulkTimeoutDefault bounds the set-based remaining refresh. Under
+	// collapsed planner stats (11-18: partial-index reltuples=0 after an
+	// autoanalyze on a drained queue) the ANY($1) query degrades to ONE scan of
+	// all queued rows (~0.3-0.9s at 300k-650k) — O(backlog) once, not xN.
+	ispBulkTimeoutDefault = 5 * time.Second
+	// ispAdmitQueryTimeout bounds each admission query (auto-derive quotas,
+	// first remaining read). Still capped by the tick budget.
+	ispAdmitQueryTimeout = 2 * time.Second
+	// ispEvictAfterMisses: absent from this many consecutive complete scans.
+	ispEvictAfterMisses = 2
+	// Re-admission cooldown for a campaign that is still 'sending' but has
+	// zero queued rows. Legacy 60s cost two count queries per re-admission
+	// (~25k admissions/h on 2026-11-18). The bulk refresh probes cooldown
+	// campaigns every ispRefreshInterval at no extra query, so new rows end
+	// the cooldown early.
+	ispZeroQueuedCooldown  = 5 * time.Minute
+	ispLegacyCooldown      = 60 * time.Second
+	ispClaimErrLogInterval = 30 * time.Second
+)
+
+// Dispatcher counters, cumulative since boot (per process / ECS task).
+// Published on /health.send_liveness by CurrentSendLiveness.
+var (
+	dispTracked     atomic.Int64 // gauge: campaigns in the states map after the last refresh
+	dispRefreshMs   atomic.Int64 // gauge: ms of the last remaining refresh (bulk query, or the serial pass)
+	dispAdmitCntMs  atomic.Int64 // gauge: ms of the last single-campaign admission count query
+	dispScansFailed atomic.Int64 // campaign-scan or bulk-refresh read that did not complete
+	dispEvictions   atomic.Int64 // tracked campaigns dropped for absence from complete scans
+	dispAdmitFailed atomic.Int64 // admissions skipped on a failed/partial read (retried next tick)
+	dispClaimErrors atomic.Int64 // per-ISP claim queries that errored
+)
+
+// claimErrLog rate-limits claim-error logging to one line per interval.
+var claimErrLog struct {
+	mu      sync.Mutex
+	last    time.Time
+	pending int64
+}
+
+func noteClaimError(campaignID, isp string, err error) {
+	dispClaimErrors.Add(1)
+	claimErrLog.mu.Lock()
+	defer claimErrLog.mu.Unlock()
+	claimErrLog.pending++
+	if time.Since(claimErrLog.last) < ispClaimErrLogInterval {
+		return
+	}
+	log.Printf("[ISPDispatch] claim errors: %d in last %s (total %d; latest campaign=%s isp=%s err=%v)",
+		claimErrLog.pending, ispClaimErrLogInterval, dispClaimErrors.Load(), campaignID, isp, err)
+	claimErrLog.pending = 0
+	claimErrLog.last = time.Now()
+}
+
+// ispKillSwitchesFromEnv reads the dispatcher kill switches. "off" engages
+// the legacy path; anything else (incl. unset) keeps the new behaviour.
+func ispKillSwitchesFromEnv() (legacyEviction, serialRefresh bool) {
+	off := func(k string) bool { return strings.EqualFold(strings.TrimSpace(os.Getenv(k)), "off") }
+	return off("ISP_DISPATCH_LKG"), off("ISP_DISPATCH_BULK_REFRESH")
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+func (p *SendWorkerPool) refreshBudget() time.Duration {
+	if p.ispRefreshBudget > 0 {
+		return p.ispRefreshBudget
+	}
+	return ispRefreshBudgetDefault
+}
+
+func (p *SendWorkerPool) bulkTimeout() time.Duration {
+	if p.ispBulkTimeout > 0 {
+		return p.ispBulkTimeout
+	}
+	return ispBulkTimeoutDefault
+}
+
+func (p *SendWorkerPool) cooldownTTL() time.Duration {
+	if p.ispLegacyEviction {
+		return ispLegacyCooldown
+	}
+	return ispZeroQueuedCooldown
 }
 
 // ispDispatchLoop is a single coordinator goroutine that discovers ISP-quota
@@ -1270,67 +1395,116 @@ func (p *SendWorkerPool) ispDispatchLoop() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			p.refreshISPCampaigns(states, removedCooldown)
-			p.dispatchISPBatches(states, removedCooldown)
+			p.ispDispatchTick(states, removedCooldown)
 		}
 	}
 }
 
+// ispDispatchTick is one dispatcher cycle. refreshISPCampaigns is bounded by
+// refreshBudget (bulk mode), so dispatch always runs in the same tick, from
+// last-known-good remaining counts when the refresh failed.
+func (p *SendWorkerPool) ispDispatchTick(states map[string]*ispCampaignState, removedCooldown map[string]time.Time) {
+	p.refreshISPCampaigns(states, removedCooldown)
+	p.dispatchISPBatches(states, removedCooldown)
+}
+
+type ispCampaignRow struct{ id, quotasJSON string }
+
 // refreshISPCampaigns discovers sending campaigns with ISP quotas, initializes
-// batch plans, and queries the DB for actual remaining queued counts per ISP
+// batch plans, and refreshes remaining queued counts per ISP from the DB
 // (surviving server restarts). Removes campaigns no longer sending.
+//
+// Failure rule (2026-11-18 stall): every read is complete-or-error (dbscan).
+// A failed scan changes nothing — no eviction, no admission, state kept as
+// last known good. A campaign is evicted only after it is absent from
+// ispEvictAfterMisses consecutive COMPLETE scans.
 func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState, removedCooldown map[string]time.Time) {
-	// Expire stale cooldown entries
+	defer func() { dispTracked.Store(int64(len(states))) }()
+
+	ttl := p.cooldownTTL()
 	for cid, t := range removedCooldown {
-		if time.Since(t) > 60*time.Second {
+		if time.Since(t) > ttl {
 			delete(removedCooldown, cid)
 		}
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+
+	budget, cancel := context.WithTimeout(p.ctx, p.refreshBudget())
 	defer cancel()
 
-	rows, err := p.db.QueryContext(ctx, `
+	scanCtx, scanCancel := context.WithTimeout(budget, ispScanTimeout)
+	rows, qerr := p.db.QueryContext(scanCtx, `
 		SELECT id::text, COALESCE(esp_quotas::text, '{}')
 		FROM mailing_campaigns
 		WHERE status = 'sending'
 		  AND esp_quotas IS NOT NULL
 		  AND esp_quotas ? 'isp_quotas'
 	`)
-	if err != nil {
-		log.Printf("[ISPDispatch] Error querying ISP campaigns: %v", err)
+	scanned, scanErr := dbscan.Query(rows, qerr, func(r dbscan.Rows) (ispCampaignRow, error) {
+		var row ispCampaignRow
+		err := r.Scan(&row.id, &row.quotasJSON)
+		return row, err
+	})
+	scanCancel()
+
+	activeCampaigns := make(map[string]bool, len(scanned))
+	for _, sc := range scanned {
+		activeCampaigns[sc.id] = true
+	}
+	if scanErr != nil {
+		dispScansFailed.Add(1)
+		log.Printf("[ISPDispatch] campaign scan failed (%v); keeping %d tracked campaigns as last known good, no eviction/admission this tick", scanErr, len(states))
+	}
+
+	// Refresh remaining for tracked campaigns.
+	if p.ispSerialRefresh {
+		// Legacy: one query per scanned tracked campaign, own 10s ctx each.
+		passStart, n := time.Now(), 0
+		for _, sc := range scanned {
+			if st, exists := states[sc.id]; exists && time.Since(st.lastRefreshAt) >= ispRefreshInterval {
+				p.refreshRemainingFromDB(p.ctx, st)
+				n++
+			}
+		}
+		if n > 0 {
+			dispRefreshMs.Store(time.Since(passStart).Milliseconds())
+		}
+	} else if len(states) > 0 && time.Since(p.ispLastBulkRefresh) >= ispRefreshInterval {
+		var probes []string
+		if scanErr == nil {
+			for _, sc := range scanned {
+				if _, onCooldown := removedCooldown[sc.id]; onCooldown {
+					if _, tracked := states[sc.id]; !tracked {
+						probes = append(probes, sc.id)
+					}
+				}
+			}
+		}
+		bulkStart := time.Now()
+		refilled, err := p.bulkRefreshRemaining(budget, states, probes)
+		dispRefreshMs.Store(time.Since(bulkStart).Milliseconds())
+		p.ispLastBulkRefresh = time.Now()
+		if err == nil {
+			for _, id := range refilled {
+				delete(removedCooldown, id) // rows landed: re-admit now, not in 5 min
+			}
+		}
+	}
+
+	if scanErr != nil {
 		return
 	}
-	// Collect the full id set first and close the cursor before any per-campaign
-	// work. Refreshing inside the open cursor let the 5s scan ctx expire mid-scan;
-	// rows.Next() then stopped silently and the eviction pass below dropped every
-	// unscanned (still-sending) campaign (ops incident 8cd92d2484, 2026-11-18).
-	type ispCampaignRow struct{ id, quotasJSON string }
-	var scanned []ispCampaignRow
-	activeCampaigns := make(map[string]bool)
-	for rows.Next() {
-		var campID, quotasJSON string
-		if err := rows.Scan(&campID, &quotasJSON); err != nil {
-			continue
-		}
-		activeCampaigns[campID] = true
-		scanned = append(scanned, ispCampaignRow{campID, quotasJSON})
-	}
-	scanErr := rows.Err()
-	rows.Close()
-	if scanErr != nil {
-		log.Printf("[ISPDispatch] Campaign scan truncated after %d rows (%v); skipping eviction this tick", len(scanned), scanErr)
-	}
 
+	deferred := 0
 	for _, sc := range scanned {
 		campID, quotasJSON := sc.id, sc.quotasJSON
-
-		if st, exists := states[campID]; exists {
-			if time.Since(st.lastRefreshAt) >= 15*time.Second {
-				p.refreshRemainingFromDB(st)
-			}
+		if _, exists := states[campID]; exists {
 			continue
 		}
 		if _, onCooldown := removedCooldown[campID]; onCooldown {
+			continue
+		}
+		if budget.Err() != nil {
+			deferred++
 			continue
 		}
 
@@ -1351,25 +1525,24 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			}
 		}
 		if len(quotas) == 0 {
-			// Derive quotas from actual queue distribution when volumes are unset
-			qRows, qErr := p.db.QueryContext(ctx, `
-				SELECT COALESCE(recipient_isp, 'other'), COUNT(*)
-				FROM mailing_campaign_queue
-				WHERE campaign_id = $1 AND status = 'queued'
-				GROUP BY recipient_isp`, campID)
-			if qErr == nil {
-				for qRows.Next() {
-					var isp string
-					var cnt int
-					if qRows.Scan(&isp, &cnt) == nil && cnt > 0 {
-						quotas[isp] = cnt
-					}
-				}
-				qRows.Close()
-			}
-			if len(quotas) == 0 {
+			// Derive quotas from actual queue distribution when volumes are unset.
+			// Own ctx: never inherits a scan deadline. A failed/partial read never
+			// admits a partial plan — skip, count, retry next refresh.
+			t0 := time.Now()
+			derived, err := p.deriveQuotasFromQueue(budget, campID)
+			dispAdmitCntMs.Store(time.Since(t0).Milliseconds())
+			if err != nil {
+				dispAdmitFailed.Add(1)
+				log.Printf("[ISPDispatch] admit failed campaign=%s err=%v", campID, err)
 				continue
 			}
+			if len(derived) == 0 {
+				if !p.ispLegacyEviction {
+					removedCooldown[campID] = time.Now() // zero queued: back off, bulk probe wakes it
+				}
+				continue
+			}
+			quotas = derived
 			log.Printf("[ISPDispatch] Auto-derived quotas for campaign %s from queue: %v", campID, quotas)
 		}
 
@@ -1387,8 +1560,12 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			plan:       ComputeBatchPlan(quotas, numBatches),
 			remaining:  make(map[string]int, len(quotas)),
 		}
-		if !p.refreshRemainingFromDB(state) {
-			log.Printf("[ISPDispatch] Skipping campaign %s on first discovery (refresh failed, will retry next tick)", campID)
+		t0 := time.Now()
+		ok := p.refreshRemainingFromDB(budget, state)
+		dispAdmitCntMs.Store(time.Since(t0).Milliseconds())
+		if !ok {
+			dispAdmitFailed.Add(1)
+			log.Printf("[ISPDispatch] admit failed campaign=%s err=first remaining read failed (retry next tick)", campID)
 			continue
 		}
 
@@ -1396,17 +1573,145 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		log.Printf("[ISPDispatch] Tracking campaign %s: quotas=%v plan=%v remaining=%v batches=%d",
 			campID, quotas, state.plan, state.remaining, numBatches)
 	}
+	if deferred > 0 {
+		log.Printf("[ISPDispatch] refresh budget %s exhausted; %d new campaign(s) deferred to next tick", p.refreshBudget(), deferred)
+	}
 
-	if scanErr == nil {
-		for campID := range states {
-			if !activeCampaigns[campID] {
-				log.Printf("[ISPDispatch] Campaign %s no longer sending, removing state", campID)
-				delete(states, campID)
+	// Eviction — only reached on a COMPLETE scan.
+	for campID, st := range states {
+		if activeCampaigns[campID] {
+			st.missedScans = 0
+			continue
+		}
+		st.missedScans++
+		if !p.ispLegacyEviction && st.missedScans < ispEvictAfterMisses {
+			log.Printf("[ISPDispatch] Campaign %s absent from %d complete scan(s); keeping until %d", campID, st.missedScans, ispEvictAfterMisses)
+			continue
+		}
+		log.Printf("[ISPDispatch] Campaign %s no longer sending, removing state", campID)
+		delete(states, campID)
+		dispEvictions.Add(1)
+	}
+
+	if budget.Err() == nil {
+		p.warnOrphanedCampaigns(budget)
+	}
+}
+
+// deriveQuotasFromQueue reads a volume-0 campaign's per-ISP queued counts
+// (complete-or-error). Predicate and ISP key unchanged from the original
+// inline query: raw recipient_isp, so the plan keys match the claim's
+// `q.recipient_isp = $3`.
+func (p *SendWorkerPool) deriveQuotasFromQueue(parent context.Context, campID string) (map[string]int, error) {
+	ctx, cancel := context.WithTimeout(parent, ispAdmitQueryTimeout)
+	defer cancel()
+	type ispCount struct {
+		isp string
+		n   int
+	}
+	rows, qerr := p.db.QueryContext(ctx, `
+				SELECT COALESCE(recipient_isp, 'other'), COUNT(*)
+				FROM mailing_campaign_queue
+				WHERE campaign_id = $1 AND status = 'queued'
+				GROUP BY recipient_isp`, campID)
+	res, err := dbscan.Query(rows, qerr, func(r dbscan.Rows) (ispCount, error) {
+		var c ispCount
+		err := r.Scan(&c.isp, &c.n)
+		return c, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	quotas := make(map[string]int, len(res))
+	for _, c := range res {
+		if c.n > 0 {
+			quotas[c.isp] = c.n
+		}
+	}
+	return quotas, nil
+}
+
+// bulkRefreshRemaining refreshes remaining for EVERY tracked campaign (plus
+// the cooldown probe ids) in ONE set-based query. Complete-or-error: on any
+// error every tracked campaign keeps its old remaining and is marked
+// lastRefreshOK=false (so nothing is concluded "fully dispatched" from it).
+// A tracked id absent from a COMPLETE result has zero queued. Returns the
+// probe ids that now have queued rows.
+func (p *SendWorkerPool) bulkRefreshRemaining(parent context.Context, states map[string]*ispCampaignState, probes []string) ([]string, error) {
+	ids := make([]string, 0, len(states)+len(probes))
+	for id := range states {
+		ids = append(ids, id)
+	}
+	ids = append(ids, probes...)
+
+	ctx, cancel := context.WithTimeout(parent, p.bulkTimeout())
+	defer cancel()
+	type row struct {
+		campID, isp string
+		n           int
+	}
+	// Same predicate and ISP normalisation as refreshRemainingFromDB, set-based.
+	// Intended index: idx_queue_campaign_status_scheduled (campaign_id, status,
+	// scheduled_at) WHERE status='queued'. Keep the ANY($1) filter: an
+	// unfiltered status='queued' GROUP BY plans as a parallel seq scan of the
+	// whole 35 GB table under good stats.
+	rows, qerr := p.db.QueryContext(ctx, `
+		SELECT campaign_id::text, COALESCE(LOWER(recipient_isp), 'other'), COUNT(*)
+		FROM mailing_campaign_queue
+		WHERE campaign_id = ANY($1)
+		  AND status = 'queued'
+		GROUP BY campaign_id, COALESCE(LOWER(recipient_isp), 'other')
+	`, pq.Array(ids))
+	res, err := dbscan.Query(rows, qerr, func(r dbscan.Rows) (row, error) {
+		var x row
+		err := r.Scan(&x.campID, &x.isp, &x.n)
+		return x, err
+	})
+	if err != nil {
+		dispScansFailed.Add(1)
+		for _, st := range states {
+			st.lastRefreshOK = false
+		}
+		log.Printf("[ISPDispatch] bulk remaining refresh failed for %d campaigns (keeping last known good): %v", len(ids), err)
+		return nil, err
+	}
+
+	fresh := make(map[string]map[string]int, len(ids))
+	for _, x := range res {
+		m := fresh[x.campID]
+		if m == nil {
+			m = make(map[string]int)
+			fresh[x.campID] = m
+		}
+		m[x.isp] = x.n
+	}
+	now := time.Now()
+	for id, st := range states {
+		applyRemaining(st, fresh[id]) // nil map => zero queued (complete result)
+		st.lastRefreshOK = true
+		st.lastRefreshAt = now
+	}
+	var refilled []string
+	for _, id := range probes {
+		for _, n := range fresh[id] {
+			if n > 0 {
+				refilled = append(refilled, id)
+				break
 			}
 		}
 	}
+	return refilled, nil
+}
 
-	p.warnOrphanedCampaigns(ctx)
+// applyRemaining overwrites remaining from a COMPLETE per-ISP count read.
+func applyRemaining(state *ispCampaignState, fresh map[string]int) {
+	if state.remaining == nil {
+		state.remaining = make(map[string]int, len(state.plan)+1)
+	}
+	for isp := range state.plan {
+		state.remaining[isp] = fresh[isp]
+	}
+	state.remaining["other"] = fresh["other"]
 }
 
 // warnOrphanedCampaigns detects campaigns in "sending" status that lack ISP
@@ -1432,41 +1737,40 @@ func (p *SendWorkerPool) warnOrphanedCampaigns(ctx context.Context) {
 	}
 }
 
-// refreshRemainingFromDB queries the actual queued item counts per ISP from
-// the database, making the dispatcher resilient to server restarts.
-// Returns true on success, false on error (so callers can avoid acting on stale data).
-func (p *SendWorkerPool) refreshRemainingFromDB(state *ispCampaignState) bool {
-	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+// refreshRemainingFromDB queries the actual queued item counts per ISP for
+// one campaign. Complete-or-error: on a failed or partial read it returns
+// false, sets lastRefreshOK=false and KEEPS the old remaining (never zeroes
+// an ISP it did not see).
+func (p *SendWorkerPool) refreshRemainingFromDB(parent context.Context, state *ispCampaignState) bool {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
-	rows, err := p.db.QueryContext(ctx, `
+	type ispCount struct {
+		isp string
+		n   int
+	}
+	rows, qerr := p.db.QueryContext(ctx, `
 		SELECT COALESCE(LOWER(recipient_isp), 'other'), COUNT(*)
 		FROM mailing_campaign_queue
 		WHERE campaign_id = $1
 		  AND status = 'queued'
 		GROUP BY COALESCE(LOWER(recipient_isp), 'other')
 	`, state.campaignID)
+	res, err := dbscan.Query(rows, qerr, func(r dbscan.Rows) (ispCount, error) {
+		var c ispCount
+		err := r.Scan(&c.isp, &c.n)
+		return c, err
+	})
 	if err != nil {
-		log.Printf("[ISPDispatch] Error refreshing remaining for %s: %v", state.campaignID, err)
+		log.Printf("[ISPDispatch] Error refreshing remaining for %s (keeping last known good): %v", state.campaignID, err)
 		state.lastRefreshOK = false
 		return false
 	}
-	defer rows.Close()
-
-	fresh := make(map[string]int)
-	for rows.Next() {
-		var isp string
-		var count int
-		if err := rows.Scan(&isp, &count); err != nil {
-			continue
-		}
-		fresh[isp] = count
+	fresh := make(map[string]int, len(res))
+	for _, c := range res {
+		fresh[c.isp] = c.n
 	}
-
-	for isp := range state.plan {
-		state.remaining[isp] = fresh[isp]
-	}
-	state.remaining["other"] = fresh["other"]
+	applyRemaining(state, fresh)
 	state.lastRefreshOK = true
 	state.lastRefreshAt = time.Now()
 	return true
@@ -1574,7 +1878,8 @@ func (p *SendWorkerPool) dispatchOneCampaign(campID string, state *ispCampaignSt
 			log.Printf("[ISPDispatch] Campaign %s batch=0 but last refresh failed — keeping (will retry)", campID)
 			return false, time.Time{}
 		}
-		log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing (cooldown 60s)", campID)
+		// Only reachable when the last remaining read was COMPLETE.
+		log.Printf("[ISPDispatch] Campaign %s fully dispatched, removing (cooldown %s)", campID, p.cooldownTTL())
 		return true, time.Now()
 	}
 

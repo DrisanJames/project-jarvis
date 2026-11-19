@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,7 +173,33 @@ const (
 	invCampaignNoSend selfCheckInvariantKey = "campaign_no_send"
 	invFailedBurst    selfCheckInvariantKey = "failed_burst"
 	invScheduledDead  selfCheckInvariantKey = "scheduled_dead"
+
+	// invSendRateFloor: mail is ready but the send rate has collapsed (the
+	// 2026-11-18 08:00-14:00 MT stall ran at 7k-19k/15m against a healthy
+	// 30k-48k with 700k+ ready rows — no invariant above pages on a partial
+	// stall, only on a full stop).
+	invSendRateFloor selfCheckInvariantKey = "send_rate_floor"
 )
+
+const (
+	// sendRateFloorReadyMin: the floor only applies with this much ready work.
+	sendRateFloorReadyMin = 100000
+	// sendRateFloorDefault: sent_last_15m below this pages (SEND_RATE_FLOOR_15M).
+	sendRateFloorDefault = 15000
+	// sendRateFloorSamples: consecutive measured breaching samples to page.
+	sendRateFloorSamples = 2
+)
+
+// sendRateFloorConfig reads SEND_RATE_FLOOR_15M / SEND_RATE_FLOOR_ALERT once.
+func sendRateFloorConfig() (floor int64, enabled bool) {
+	floor = sendRateFloorDefault
+	if raw := strings.TrimSpace(os.Getenv("SEND_RATE_FLOOR_15M")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			floor = n
+		}
+	}
+	return floor, !strings.EqualFold(strings.TrimSpace(os.Getenv("SEND_RATE_FLOOR_ALERT")), "off")
+}
 
 // SendLivenessSnapshot is the send-path liveness gauge published on /health as
 // `send_liveness`. It is refreshed by the OutboxSelfCheck tick (5 min) and read
@@ -198,6 +225,22 @@ type SendLivenessSnapshot struct {
 	QueueReadyRows int64      `json:"queue_ready_rows"`
 	CheckedAt      *time.Time `json:"checked_at"`
 	Errors         []string   `json:"errors,omitempty"`
+
+	// ISP dispatcher counters (send_worker.go), read LIVE at /health time —
+	// not on the 5-min self-check tick. Per process (each ECS task reports its
+	// own). Cumulative since boot except the two gauges.
+	DispatcherTracked int64 `json:"dispatcher_tracked"`  // gauge: campaigns tracked after the last refresh
+	RefreshMsLast     int64 `json:"refresh_ms_last"`     // gauge: last remaining refresh ms (bulk query)
+	AdmitCountMsLast  int64 `json:"admit_count_ms_last"` // gauge: last single-campaign admission count ms (11-18: 2 -> 550)
+	ScansFailed       int64 `json:"scans_failed"`        // campaign scan / bulk refresh read incomplete
+	Evictions         int64 `json:"evictions"`           // dropped after absence from complete scans
+	AdmitFailed       int64 `json:"admit_failed"`        // admissions skipped on a failed read
+	ClaimErrors       int64 `json:"claim_errors"`        // per-ISP claim queries that errored
+
+	// Queue planner-statistics guard (queue_stats_guard.go), live, per process.
+	StatsGuardAnalyzes int64      `json:"stats_guard_analyzes"`
+	StatsGuardErrors   int64      `json:"stats_guard_errors"`
+	StatsGuardLastAt   *time.Time `json:"stats_guard_last_at"`
 }
 
 // sendLiveness holds the most recent SendLivenessSnapshot. atomic.Value keeps
@@ -209,10 +252,21 @@ var sendLiveness atomic.Value
 // tick completes it returns the zero value with a nil CheckedAt — which reads
 // on /health as "not yet measured", never as "healthy".
 func CurrentSendLiveness() SendLivenessSnapshot {
-	if v, ok := sendLiveness.Load().(SendLivenessSnapshot); ok {
-		return v
+	v, _ := sendLiveness.Load().(SendLivenessSnapshot)
+	v.DispatcherTracked = dispTracked.Load()
+	v.RefreshMsLast = dispRefreshMs.Load()
+	v.ScansFailed = dispScansFailed.Load()
+	v.Evictions = dispEvictions.Load()
+	v.AdmitFailed = dispAdmitFailed.Load()
+	v.ClaimErrors = dispClaimErrors.Load()
+	v.AdmitCountMsLast = dispAdmitCntMs.Load()
+	v.StatsGuardAnalyzes = statsGuardAnalyzes.Load()
+	v.StatsGuardErrors = statsGuardErrors.Load()
+	if ns := statsGuardLastAt.Load(); ns > 0 {
+		t := time.Unix(0, ns).UTC()
+		v.StatsGuardLastAt = &t
 	}
-	return SendLivenessSnapshot{}
+	return v
 }
 
 // selfCheckJanitorDisabled is the kill switch for BOTH janitors on this tick
@@ -244,6 +298,11 @@ type OutboxSelfCheck struct {
 	// backlogProgressErrs counts consecutive ticks on which the queued-backlog
 	// progress probe errored (AP-2D0D2BA2). Reset on any tick that measures.
 	backlogProgressErrs int
+
+	// Rate-collapse alarm (invSendRateFloor). Config read at construction.
+	rateFloor         int64
+	rateFloorEnabled  bool
+	rateFloorBreaches int // consecutive measured breaching samples
 }
 
 // backlogProgressErrPageAfter: a progress-probe error pages only once it has
@@ -257,11 +316,14 @@ const backlogProgressErrPageAfter = 3
 // self-check can still be started even when SMS alerting is disabled (the
 // queries still fire; they log rather than page).
 func NewOutboxSelfCheck(db *sql.DB) *OutboxSelfCheck {
+	floor, on := sendRateFloorConfig()
 	return &OutboxSelfCheck{
-		db:         db,
-		interval:   DefaultSelfCheckInterval,
-		reAlert:    DefaultSelfCheckReAlert,
-		lastAlerts: make(map[selfCheckInvariantKey]time.Time),
+		db:               db,
+		interval:         DefaultSelfCheckInterval,
+		reAlert:          DefaultSelfCheckReAlert,
+		lastAlerts:       make(map[selfCheckInvariantKey]time.Time),
+		rateFloor:        floor,
+		rateFloorEnabled: on,
 	}
 }
 
@@ -274,11 +336,14 @@ func NewOutboxSelfCheckWithConfig(db *sql.DB, interval, reAlert time.Duration) *
 	if reAlert <= 0 {
 		reAlert = DefaultSelfCheckReAlert
 	}
+	floor, on := sendRateFloorConfig()
 	return &OutboxSelfCheck{
-		db:         db,
-		interval:   interval,
-		reAlert:    reAlert,
-		lastAlerts: make(map[selfCheckInvariantKey]time.Time),
+		db:               db,
+		interval:         interval,
+		reAlert:          reAlert,
+		lastAlerts:       make(map[selfCheckInvariantKey]time.Time),
+		rateFloor:        floor,
+		rateFloorEnabled: on,
 	}
 }
 
@@ -299,8 +364,8 @@ func (c *OutboxSelfCheck) SetAlerter(alerter SMSAlerter, recipients []string) {
 // a server restart that coincides with a degraded state reports within
 // milliseconds rather than waiting an interval.
 func (c *OutboxSelfCheck) Start(ctx context.Context) {
-	log.Printf("[OutboxSelfCheck] starting (interval=%s, re_alert=%s, recipients=%d)",
-		c.interval, c.reAlert, len(c.recipients))
+	log.Printf("[OutboxSelfCheck] starting (interval=%s, re_alert=%s, recipients=%d, send_rate_floor=%d/15m alert=%s)",
+		c.interval, c.reAlert, len(c.recipients), c.rateFloor, onOff(c.rateFloorEnabled))
 	c.runOnce(ctx)
 
 	ticker := time.NewTicker(c.interval)
@@ -342,6 +407,7 @@ func (c *OutboxSelfCheck) runOnce(ctx context.Context) {
 	c.checkFailedBurst(ctx)
 	c.checkScheduledDead(ctx)
 	c.sampleSendThroughput(ctx, &snap)
+	c.checkSendRateFloor(ctx, snap)
 
 	now := time.Now().UTC()
 	snap.CheckedAt = &now
@@ -1131,6 +1197,38 @@ func (c *OutboxSelfCheck) sampleSendThroughput(ctx context.Context, snap *SendLi
 		t := lastSent.Time.UTC()
 		snap.LastSentAt = &t
 	}
+}
+
+// checkSendRateFloor pages when ready work is deep but the send rate has
+// collapsed, on sendRateFloorSamples consecutive MEASURED samples. Either
+// probe failing makes the sample UNKNOWN: never a page, and it breaks the
+// streak. No DB access of its own — it reads what this tick measured.
+// Alert only; no remediation.
+func (c *OutboxSelfCheck) checkSendRateFloor(ctx context.Context, snap SendLivenessSnapshot) {
+	if !c.rateFloorEnabled {
+		return
+	}
+	for _, e := range snap.Errors {
+		if e == "queue_ready_rows" || e == "sent_last_15m" {
+			c.rateFloorBreaches = 0
+			return
+		}
+	}
+	if snap.QueueReadyRows <= sendRateFloorReadyMin || snap.SentLast15m >= c.rateFloor {
+		c.rateFloorBreaches = 0
+		return
+	}
+	c.rateFloorBreaches++
+	if c.rateFloorBreaches < sendRateFloorSamples {
+		log.Printf("[OutboxSelfCheck] send rate %d/15m below floor %d with %d ready rows (sample %d/%d, not paging)",
+			snap.SentLast15m, c.rateFloor, snap.QueueReadyRows, c.rateFloorBreaches, sendRateFloorSamples)
+		return
+	}
+	msg := fmt.Sprintf(
+		"send rate collapsed · *%s* sent in 15m\nReady: %s rows\nFloor: %s/15m · %d consecutive samples\nRun: `curl -s $HOST/health | jq .send_liveness`",
+		comma(int(snap.SentLast15m)), comma(int(snap.QueueReadyRows)), comma(int(c.rateFloor)), c.rateFloorBreaches,
+	)
+	c.maybeAlert(ctx, invSendRateFloor, msg)
 }
 
 // maybeAlert honours per-invariant re-alert suppression. The log line always
