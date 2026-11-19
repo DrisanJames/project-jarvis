@@ -1374,7 +1374,10 @@ func (p *SendWorkerPool) bulkTimeout() time.Duration {
 }
 
 func (p *SendWorkerPool) cooldownTTL() time.Duration {
-	if p.ispLegacyEviction {
+	// The 5-minute cooldown is only safe when the bulk refresh probes cooled
+	// campaigns every ispRefreshInterval. The serial path never probes, so
+	// either kill switch falls back to the 60s cooldown.
+	if p.ispLegacyEviction || p.ispSerialRefresh {
 		return ispLegacyCooldown
 	}
 	return ispZeroQueuedCooldown
@@ -1468,7 +1471,10 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 		if n > 0 {
 			dispRefreshMs.Store(time.Since(passStart).Milliseconds())
 		}
-	} else if len(states) > 0 && time.Since(p.ispLastBulkRefresh) >= ispRefreshInterval {
+	} else if time.Since(p.ispLastBulkRefresh) >= ispRefreshInterval {
+		// Probes are built BEFORE the "anything to do" check: a cooled-down
+		// campaign must be woken by its next wave even when nothing else is
+		// tracked (overnight, or between waves once every campaign drained).
 		var probes []string
 		if scanErr == nil {
 			for _, sc := range scanned {
@@ -1478,6 +1484,9 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 					}
 				}
 			}
+		}
+		if len(states)+len(probes) == 0 {
+			goto afterRefresh
 		}
 		bulkStart := time.Now()
 		refilled, err := p.bulkRefreshRemaining(budget, states, probes)
@@ -1489,6 +1498,7 @@ func (p *SendWorkerPool) refreshISPCampaigns(states map[string]*ispCampaignState
 			}
 		}
 	}
+afterRefresh:
 
 	if scanErr != nil {
 		return

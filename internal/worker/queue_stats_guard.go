@@ -256,7 +256,7 @@ func (g *QueueStatsGuard) analyze(parent context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", queueStatsGuardAnalyzeTO.Milliseconds())); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%dms'; SET LOCAL lock_timeout = '10s'", queueStatsGuardAnalyzeTO.Milliseconds())); err != nil {
 		return fmt.Errorf("set statement_timeout: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "ANALYZE mailing_campaign_queue"); err != nil {

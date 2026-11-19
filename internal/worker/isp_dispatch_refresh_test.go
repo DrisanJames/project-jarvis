@@ -388,3 +388,31 @@ func TestISPDispatch_CountersOnSendLiveness(t *testing.T) {
 	require.EqualValues(t, 7, m["dispatcher_tracked"])
 	require.EqualValues(t, 42, m["refresh_ms_last"])
 }
+
+// Review finding (2026-11-18): a cooled-down campaign must be woken by its next
+// wave even when NOTHING else is tracked (overnight / between waves). Before
+// the fix the bulk probe was gated on len(states) > 0 and the campaign waited
+// the full 5-minute cooldown.
+func TestISPDispatch_CooldownProbe_NothingElseTracked(t *testing.T) {
+	p, mock := newDispatchPool(t)
+	mock.ExpectQuery(reDispScan).WillReturnRows(scanRows("camp-c"))
+	mock.ExpectQuery(reDispBulk).WillReturnRows(sqlmock.NewRows([]string{"c", "isp", "n"}).AddRow("camp-c", "gmail", 12))
+	mock.ExpectQuery(reDispRefresh).WithArgs("camp-c").WillReturnRows(ispRows("gmail", 12))
+	mock.ExpectQuery(reDispOrphan).WillReturnRows(orphanRows())
+
+	states := map[string]*ispCampaignState{}
+	cooldown := map[string]time.Time{"camp-c": time.Now()}
+	p.refreshISPCampaigns(states, cooldown)
+	require.NotContains(t, cooldown, "camp-c", "rows landed: cooldown must be lifted with no other campaign tracked")
+	require.Contains(t, states, "camp-c")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Review finding (2026-11-18): the serial path never probes cooled campaigns,
+// so ISP_DISPATCH_BULK_REFRESH=off must fall back to the 60s cooldown.
+func TestISPDispatch_SerialRefreshUsesLegacyCooldown(t *testing.T) {
+	p, _ := newDispatchPool(t)
+	require.Equal(t, ispZeroQueuedCooldown, p.cooldownTTL())
+	p.ispSerialRefresh = true
+	require.Equal(t, ispLegacyCooldown, p.cooldownTTL())
+}
