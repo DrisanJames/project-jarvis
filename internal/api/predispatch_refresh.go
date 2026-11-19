@@ -743,6 +743,13 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 			WHERE organization_id = $1 AND name = $2 AND status NOT IN ('cancelled','deleted','failed')
 			ORDER BY created_at DESC LIMIT 1
 		`, o.org, orig).Scan(&origID, &origStatus, &origRecips, &queued)
+		if oerr != nil && oerr != sql.ErrNoRows {
+			// The original's state is UNKNOWN, not absent: falling through to
+			// "discarded" would cancel the sibling while the original may also be
+			// gone (both cells cancelled). Do nothing; the next tick retries.
+			log.Printf("[PreDispatch] ERROR: orphan %q original lookup failed: %v — left as is, retry next tick", o.name, oerr)
+			continue
+		}
 		if o.status == "scheduled" && o.recips > 0 && o.waves > 0 && oerr == nil && origStatus == "scheduled" && queued == 0 {
 			c := predispatchCell{ID: origID, OrgID: o.org, Name: orig, Recipients: origRecips}
 			if err := s.predispatchSwap(ctx, d, c, o.id, o.recips, map[string]predispatchSegment{}); err != nil {

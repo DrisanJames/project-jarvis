@@ -79,3 +79,47 @@ func TestVMTAPool_CompletedEmptyReadIsEmpty(t *testing.T) {
 		t.Fatalf("completed empty read must be 'no IPs', got %v", err)
 	}
 }
+
+// A strict-isolation preferences read cut short must keep the previous strictPools, not
+// replace them with the partial (here: empty) set — that would let a strict ISP fall back
+// onto shared pools until the next TTL refresh.
+func TestVMTAPool_AbortedStrictPrefsReadKeepsPriorStrictPools(t *testing.T) {
+	p, mock := newEmptyPoolMock(t)
+	mock.ExpectQuery(`SELECT ip.id, ip.hostname, ip.status`).
+		WillReturnRows(sqlmock.NewRows(poolCols).
+			AddRow("ip1", "mta1.example.com", "active", 0, 0, "db-yahoo-pool", "1.2.3.4"))
+	mock.ExpectQuery(`SELECT pool.name\s+FROM mailing_ip_pool_preferences`).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("db-yahoo-pool"))
+	p.refresh(t.Context(), "prof-1")
+	if !p.strictPools["yahoo"] {
+		t.Fatalf("setup: yahoo not strict after good load: %v", p.strictPools)
+	}
+	p.loadedAt = p.loadedAt.Add(-2 * p.ttl) // force stale
+
+	mock.ExpectQuery(`SELECT ip.id, ip.hostname, ip.status`).
+		WillReturnRows(sqlmock.NewRows(poolCols).
+			AddRow("ip1", "mta1.example.com", "active", 0, 0, "db-yahoo-pool", "1.2.3.4"))
+	mock.ExpectQuery(`SELECT pool.name\s+FROM mailing_ip_pool_preferences`).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).
+			AddRow("db-yahoo-pool").
+			RowError(0, errors.New("canceling statement due to statement timeout")))
+	p.refresh(t.Context(), "prof-1")
+	if !p.strictPools["yahoo"] {
+		t.Fatalf("aborted strict-prefs read dropped yahoo strict isolation: %v", p.strictPools)
+	}
+
+	// Query error (not just a truncated cursor) also keeps the previous set.
+	p.loadedAt = p.loadedAt.Add(-2 * p.ttl)
+	mock.ExpectQuery(`SELECT ip.id, ip.hostname, ip.status`).
+		WillReturnRows(sqlmock.NewRows(poolCols).
+			AddRow("ip1", "mta1.example.com", "active", 0, 0, "db-yahoo-pool", "1.2.3.4"))
+	mock.ExpectQuery(`SELECT pool.name\s+FROM mailing_ip_pool_preferences`).
+		WillReturnError(errors.New("driver: bad connection"))
+	p.refresh(t.Context(), "prof-1")
+	if !p.strictPools["yahoo"] {
+		t.Fatalf("failed strict-prefs query dropped yahoo strict isolation: %v", p.strictPools)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

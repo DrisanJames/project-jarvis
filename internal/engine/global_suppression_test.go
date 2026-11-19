@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -129,5 +131,54 @@ func TestRemoveScoped_DeletesRowAndCache(t *testing.T) {
 	_, stillThere := h.brandSet[brandRoot]
 	assert.False(t, stillThere, "empty brand map should be deleted")
 
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A brand-scoped load cut short must return an error (so LoadFromDBWithRetry
+// retries) and leave the previously loaded brand set intact — never merge the
+// partial read and report success.
+func TestLoadFromDB_TruncatedBrandLoadErrorsAndKeepsPriorSet(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	h := NewGlobalSuppressionHub(db, "org-1", "")
+	prior := "prior@example.com"
+	h.brandSet["discountblog.com"] = map[string]bool{MD5Hash(prior): true}
+
+	mock.ExpectQuery(`SELECT email, md5_hash FROM mailing_global_suppressions`).
+		WithArgs("org-1").
+		WillReturnRows(sqlmock.NewRows([]string{"email", "md5_hash"}))
+	mock.ExpectQuery(`SELECT brand_root, email_hash FROM mailing_domain_suppressions`).
+		WithArgs("org-1").
+		WillReturnRows(sqlmock.NewRows([]string{"brand_root", "email_hash"}).
+			AddRow("historythinking.com", MD5Hash("partial@example.com")).
+			AddRow("historythinking.com", MD5Hash("never@example.com")).
+			RowError(1, errors.New("canceling statement due to statement timeout")))
+
+	err = h.LoadFromDB(context.Background())
+	require.Error(t, err, "truncated brand read must fail the load")
+	assert.True(t, h.IsSuppressedForBrand(prior, "discountblog.com"), "previous brand set must survive")
+	assert.False(t, h.IsSuppressedForBrand("partial@example.com", "historythinking.com"),
+		"partial brand rows must not be merged")
+
+	// A non-missing-table query error is also a failed load.
+	mock.ExpectQuery(`SELECT email, md5_hash FROM mailing_global_suppressions`).
+		WithArgs("org-1").
+		WillReturnRows(sqlmock.NewRows([]string{"email", "md5_hash"}))
+	mock.ExpectQuery(`SELECT brand_root, email_hash FROM mailing_domain_suppressions`).
+		WithArgs("org-1").
+		WillReturnError(errors.New("driver: bad connection"))
+	require.Error(t, h.LoadFromDB(context.Background()))
+	assert.True(t, h.IsSuppressedForBrand(prior, "discountblog.com"))
+
+	// Missing table (42P01) stays a soft skip, as before.
+	mock.ExpectQuery(`SELECT email, md5_hash FROM mailing_global_suppressions`).
+		WithArgs("org-1").
+		WillReturnRows(sqlmock.NewRows([]string{"email", "md5_hash"}))
+	mock.ExpectQuery(`SELECT brand_root, email_hash FROM mailing_domain_suppressions`).
+		WithArgs("org-1").
+		WillReturnError(&pq.Error{Code: "42P01", Message: `relation "mailing_domain_suppressions" does not exist`})
+	require.NoError(t, h.LoadFromDB(context.Background()))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
