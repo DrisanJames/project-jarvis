@@ -40,6 +40,7 @@ func newHubForTest(t *testing.T) (*engine.GlobalSuppressionHub, sqlmock.Sqlmock)
 }
 
 const hubGlobalLoadQuery = `SELECT email, md5_hash FROM mailing_global_suppressions WHERE organization_id = \$1`
+const hubBrandLoadQuery = `SELECT brand_root, email_hash FROM mailing_domain_suppressions WHERE organization_id = \$1`
 const hubCountQuery = `SELECT COUNT\(\*\) FROM mailing_global_suppressions WHERE organization_id = \$1`
 
 func TestHubLoadRetry_FirstFailThenSuccess(t *testing.T) {
@@ -49,13 +50,17 @@ func TestHubLoadRetry_FirstFailThenSuccess(t *testing.T) {
 	mock.ExpectQuery(hubGlobalLoadQuery).
 		WithArgs(hubTestOrgID).
 		WillReturnError(errors.New("canceling statement due to statement timeout"))
-	// …attempt 2 succeeds. (The brand-table read that follows is
-	// deliberately unmocked — LoadFromDB tolerates its absence by design.)
+	// …attempt 2 succeeds, brand-table read included. (A brand read that
+	// FAILS now fails the load — complete-or-error, 2026-11-18; only a
+	// missing table, 42P01, is tolerated.)
 	mock.ExpectQuery(hubGlobalLoadQuery).
 		WithArgs(hubTestOrgID).
 		WillReturnRows(sqlmock.NewRows([]string{"email", "md5_hash"}).
 			AddRow("a@example.com", engine.MD5Hash("a@example.com")).
 			AddRow("b@example.com", engine.MD5Hash("b@example.com")))
+	mock.ExpectQuery(hubBrandLoadQuery).
+		WithArgs(hubTestOrgID).
+		WillReturnRows(sqlmock.NewRows([]string{"brand_root", "email_hash"}))
 
 	err := hub.LoadFromDBWithRetry(context.Background(), 3, time.Millisecond, time.Second)
 	require.NoError(t, err, "a transient first failure must be recovered by the bounded retry")
@@ -100,6 +105,9 @@ func TestHubReconcile_DivergenceReloadsAndFlags(t *testing.T) {
 			AddRow("a@example.com", engine.MD5Hash("a@example.com")).
 			AddRow("b@example.com", engine.MD5Hash("b@example.com")).
 			AddRow("c@example.com", engine.MD5Hash("c@example.com")))
+	mock.ExpectQuery(hubBrandLoadQuery).
+		WithArgs(hubTestOrgID).
+		WillReturnRows(sqlmock.NewRows([]string{"brand_root", "email_hash"}))
 
 	status := hub.ReconcileNow(context.Background())
 	require.True(t, status.Diverged, "a hub missing DB entries beyond tolerance must flag Diverged")

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/dbscan"
 )
 
 // =============================================================================
@@ -188,24 +189,29 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		return
 	}
 
-	// Load strict isolation preferences
-	strictSet := make(map[string]bool)
-	prefRows, prefErr := p.db.QueryContext(ctx, `
+	// Load strict isolation preferences. Complete-or-error (dbscan): a failed or
+	// cut-short read keeps the previous strictPools — a partial set would let a
+	// strict-isolation ISP fall back onto shared pools. Retried at the next TTL refresh.
+	prefRows, prefQErr := p.db.QueryContext(ctx, `
 		SELECT pool.name
 		FROM mailing_ip_pool_preferences pref
 		JOIN mailing_ip_pools pool ON pool.id = pref.pool_id
 		WHERE pref.isolation_mode = 'strict'
 		  AND pool.name LIKE $1 || '-%'
 	`, p.poolPrefix)
-	if prefErr == nil {
-		defer prefRows.Close()
-		for prefRows.Next() {
-			var poolName string
-			if prefRows.Scan(&poolName) == nil {
-				suffix := extractPoolSuffix(poolName)
-				if suffix != "" {
-					strictSet[suffix] = true
-				}
+	prefNames, prefErr := dbscan.Query(prefRows, prefQErr, func(r dbscan.Rows) (string, error) {
+		var n string
+		return n, r.Scan(&n)
+	})
+	strictSet := p.strictPools
+	if prefErr != nil {
+		log.Printf("[vmtaPool] ERROR: strict-isolation preferences read failed for profile %s (prefix=%s): %v — keeping previous %d strict pools",
+			profileID, p.poolPrefix, prefErr, len(p.strictPools))
+	} else {
+		strictSet = make(map[string]bool, len(prefNames))
+		for _, poolName := range prefNames {
+			if suffix := extractPoolSuffix(poolName); suffix != "" {
+				strictSet[suffix] = true
 			}
 		}
 	}

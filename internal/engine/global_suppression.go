@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/ignite/sparkpost-monitor/internal/eventbus"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/dbscan"
+	"github.com/lib/pq"
 )
 
 // GlobalSuppressionHub is the single source of truth for all suppressed emails.
@@ -150,9 +153,24 @@ func (h *GlobalSuppressionHub) LoadFromDB(ctx context.Context) error {
 	// "relation does not exist" class of errors and continue with zero
 	// brand entries; the startup migration will create the table on next
 	// boot. Any other error is fatal because it signals a real DB problem.
-	brandRows, brandErr := h.db.QueryContext(ctx,
+	//
+	// Complete-or-error (dbscan): a brand read that fails or is cut short is
+	// returned as an error (LoadFromDBWithRetry retries) and the previously
+	// loaded brand set is left untouched — a partial set is never merged as
+	// if it were the whole table.
+	type brandEntry struct{ root, hash string }
+	brandQRows, brandQErr := h.db.QueryContext(ctx,
 		`SELECT brand_root, email_hash FROM mailing_domain_suppressions WHERE organization_id = $1`,
 		h.orgID)
+	brandEntries, brandErr := dbscan.Query(brandQRows, brandQErr, func(r dbscan.Rows) (brandEntry, error) {
+		var e brandEntry
+		return e, r.Scan(&e.root, &e.hash)
+	})
+	brandTableMissing := false
+	if brandErr != nil {
+		var pqErr *pq.Error
+		brandTableMissing = errors.As(brandErr, &pqErr) && pqErr.Code == "42P01" // undefined_table
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -169,29 +187,32 @@ func (h *GlobalSuppressionHub) LoadFromDB(ctx context.Context) error {
 	}
 
 	brandCount := 0
-	if brandErr == nil && brandRows != nil {
-		defer brandRows.Close()
-		for brandRows.Next() {
-			var br, hash string
-			if err := brandRows.Scan(&br, &hash); err != nil {
-				continue
-			}
-			br = strings.ToLower(strings.TrimSpace(br))
+	if brandErr == nil {
+		for _, e := range brandEntries {
+			br := strings.ToLower(strings.TrimSpace(e.root))
 			if _, ok := h.brandSet[br]; !ok {
 				h.brandSet[br] = make(map[string]bool)
 			}
-			h.brandSet[br][hash] = true
+			h.brandSet[br][e.hash] = true
 			brandCount++
 		}
-	} else if brandErr != nil {
+	} else if brandTableMissing {
 		// Table may not exist on a first deploy where migrations run
 		// AFTER hub load. Log but don't fail — the send pipeline
 		// still works, it just has no brand suppressions yet.
 		log.Printf("[global-suppression] brand table load skipped: %v (will be created by startup migrations)", brandErr)
+	} else {
+		log.Printf("[global-suppression] ERROR: brand suppression load failed: %v — keeping previous %d brand roots", brandErr, len(h.brandSet))
 	}
 
 	log.Printf("[global-suppression] loaded %d global + %d brand entries from DB", globalCount, brandCount)
-	return globalRows.Err()
+	if err := globalRows.Err(); err != nil {
+		return err
+	}
+	if brandErr != nil && !brandTableMissing {
+		return fmt.Errorf("load brand suppressions: %w", brandErr)
+	}
+	return nil
 }
 
 // LoadFromDBWithRetry runs LoadFromDB up to `attempts` times with a fixed

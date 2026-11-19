@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/dbscan"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
@@ -797,16 +798,20 @@ func planPMTAAudience(
 	useBloomForOffer := offerID != "" && offerSuppMgrRef != nil && offerSuppMgrRef.HasBloom(offerID)
 	offerSuppSet := make(map[string]bool)
 	if offerID != "" && !useBloomForOffer {
-		osRows, osErr := db.QueryContext(ctx,
+		osRows, osQErr := db.QueryContext(ctx,
 			`SELECT subscriber_id::text FROM mailing_offer_suppressions WHERE offer_id = $1`, offerID)
-		if osErr == nil {
-			defer osRows.Close()
-			for osRows.Next() {
-				var sid string
-				if osRows.Scan(&sid) == nil {
-					offerSuppSet[sid] = true
-				}
-			}
+		osIDs, osErr := dbscan.Query(osRows, osQErr, func(r dbscan.Rows) (string, error) {
+			var sid string
+			return sid, r.Scan(&sid)
+		})
+		if osErr != nil {
+			// FAIL CLOSED (mirrors REQ-002 below): a failed or cut-short read is
+			// not "no offer suppressions" — planning on it would mail
+			// offer-suppressed subscribers.
+			return pmtaAudiencePlan{}, fmt.Errorf("load offer suppressions for offer %s: %w (fail-closed: offer suppression cannot be enforced)", offerID, osErr)
+		}
+		for _, sid := range osIDs {
+			offerSuppSet[sid] = true
 		}
 		if len(offerSuppSet) > 0 {
 			log.Printf("[PlanAudience] loaded %d offer-level suppressions for offer %s (DB fallback)", len(offerSuppSet), offerID)
@@ -929,15 +934,15 @@ func planPMTAAudience(
 		for _, d := range sendingDomains {
 			rmArgs = append(rmArgs, d)
 		}
-		rmRows, rmErr := db.QueryContext(ctx, rmQuery, rmArgs...)
+		rmRows, rmQErr := db.QueryContext(ctx, rmQuery, rmArgs...)
+		rmEmails, rmErr := dbscan.Query(rmRows, rmQErr, func(r dbscan.Rows) (string, error) {
+			var email string
+			return email, r.Scan(&email)
+		})
 		if rmErr == nil {
-			for rmRows.Next() {
-				var email string
-				if rmRows.Scan(&email) == nil {
-					recentlyMailed[email] = true
-				}
+			for _, email := range rmEmails {
+				recentlyMailed[email] = true
 			}
-			rmRows.Close()
 		} else {
 			// FAIL CLOSED (REQ-002): the operator explicitly asked for a
 			// remail gap (MinRemailHours > 0). Planning without it would

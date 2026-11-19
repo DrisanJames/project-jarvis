@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/dbscan"
 	"github.com/lib/pq"
 )
 
@@ -24,39 +25,91 @@ type pmtaCampaignProfile struct {
 }
 
 // campaignColumnCache holds the set of columns that actually exist on
-// mailing_campaigns. Probed once at service startup, then reused so that
+// mailing_campaigns. Probed at service startup, then reused so that
 // dynamic SQL builders never reference a missing column.
+//
+// A probe that fails or is cut short (boot under DB contention) is NOT an
+// empty schema: caching it as one made every deploy insert without
+// pmta_config and the finalizer failed the campaign ("no campaign
+// configuration found"). A failed probe is not cached — the next has()
+// re-probes, at most once per campaignColumnReprobeBackoff.
 type campaignColumnCache struct {
-	mu   sync.RWMutex
-	cols map[string]bool
+	mu        sync.RWMutex
+	cols      map[string]bool
+	db        *sql.DB   // nil = static cache (tests) — never re-probed
+	loaded    bool      // a complete probe has populated cols
+	nextProbe time.Time // earliest re-probe after a failure
 }
+
+var campaignColumnReprobeBackoff = 5 * time.Second
+
+// campaignCoreColumns are columns the deploy path relies on; a successful
+// probe that lacks one is a schema problem worth an ERROR line.
+var campaignCoreColumns = []string{"pmta_config", "execution_mode"}
 
 func (c *campaignColumnCache) has(col string) bool {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	if c.loaded || c.db == nil {
+		v := c.cols[col]
+		c.mu.RUnlock()
+		return v
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loaded && time.Now().After(c.nextProbe) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		c.probeLocked(ctx)
+		cancel()
+	}
 	return c.cols[col]
 }
 
-// probeCampaignColumns queries information_schema once and populates the cache.
-func probeCampaignColumns(ctx context.Context, db *sql.DB) *campaignColumnCache {
-	cache := &campaignColumnCache{cols: make(map[string]bool)}
-	rows, err := db.QueryContext(ctx, `
+// probeLocked runs the information_schema probe (caller holds c.mu for write).
+// Complete-or-error: on failure the cache stays unloaded and is re-probed later.
+func (c *campaignColumnCache) probeLocked(ctx context.Context) {
+	rows, qerr := c.db.QueryContext(ctx, `
 		SELECT column_name
 		FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'mailing_campaigns'
 	`)
-	if err != nil {
-		log.Printf("[PMTA] WARNING: could not probe mailing_campaigns columns: %v", err)
-		return cache
-	}
-	defer rows.Close()
-	for rows.Next() {
+	names, err := dbscan.Query(rows, qerr, func(r dbscan.Rows) (string, error) {
 		var col string
-		if err := rows.Scan(&col); err == nil {
-			cache.cols[col] = true
+		return col, r.Scan(&col)
+	})
+	if err == nil && len(names) == 0 {
+		err = fmt.Errorf("information_schema returned 0 columns for mailing_campaigns")
+	}
+	if err != nil {
+		c.nextProbe = time.Now().Add(campaignColumnReprobeBackoff)
+		log.Printf("[PMTA] ERROR: mailing_campaigns column probe failed: %v — NOT cached, re-probing on next use", err)
+		return
+	}
+	cols := make(map[string]bool, len(names))
+	for _, n := range names {
+		cols[n] = true
+	}
+	c.cols = cols
+	c.loaded = true
+	for _, core := range campaignCoreColumns {
+		if !cols[core] {
+			log.Printf("[PMTA] ERROR: mailing_campaigns column probe succeeded but core column %q is missing — deploys will omit it", core)
 		}
 	}
-	log.Printf("[PMTA] column cache loaded: %d columns detected", len(cache.cols))
+	log.Printf("[PMTA] column cache loaded: %d columns detected", len(cols))
+}
+
+// probeCampaignColumns probes information_schema and returns the cache. A
+// failed probe returns an unloaded cache that re-probes on first use.
+func probeCampaignColumns(ctx context.Context, db *sql.DB) *campaignColumnCache {
+	cache := &campaignColumnCache{cols: make(map[string]bool), db: db}
+	if db == nil {
+		return cache
+	}
+	cache.mu.Lock()
+	cache.probeLocked(ctx)
+	cache.mu.Unlock()
 	return cache
 }
 
